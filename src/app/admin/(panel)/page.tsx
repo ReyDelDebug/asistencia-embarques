@@ -13,6 +13,8 @@ interface Row {
   shiftId: number; shiftCode: string; shiftName: string; departmentId: number | null; departmentName: string;
   confirmedAt: string | null; status: string; automatic: boolean; incidentId: number | null;
   incidentReason: string | null; incidentBy: string | null; observations: string;
+  late: boolean; lateEta: string | null; lateReason: string | null; extensionUntil: string | null; extensionBy: string | null;
+  canExtend: boolean;
 }
 interface Group { key: string; label: string; total: number; confirmed: number }
 interface Dashboard {
@@ -21,7 +23,7 @@ interface Dashboard {
   shifts: { id: number; code: string; name: string; openTime: string; closeTime: string }[];
   departments: { id: number; name: string }[];
   stats: {
-    total: number; confirmed: number; pending: number; falta: number; vacaciones: number; incapacidad: number;
+    total: number; confirmed: number; pending: number; retardo: number; lateArrivals: number; falta: number; vacaciones: number; incapacidad: number;
     psg: number; baja: number; percentage: number; byDepartment: Group[]; byShift: Group[];
   };
   rows: Row[];
@@ -35,6 +37,27 @@ export default function DashboardPage() {
   const [incidentTarget, setIncidentTarget] = useState<IncidentTarget | null>(null);
   const [revoke, setRevoke] = useState<{ id: number; label: string } | null>(null);
   const [lastUpdate, setLastUpdate] = useState<string>("");
+  const [extMsg, setExtMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [extBusy, setExtBusy] = useState(false);
+
+  async function extend(ids: number[]) {
+    setExtBusy(true);
+    setExtMsg(null);
+    try {
+      const r = await api<{ granted: string[]; skipped: { name: string; reason: string }[] }>("/api/admin/extensions", {
+        method: "POST", json: { employeeIds: ids },
+      });
+      const parts = [];
+      if (r.granted.length) parts.push(`Registro abierto hasta las 7:30 para: ${r.granted.join(", ")}.`);
+      if (r.skipped.length) parts.push(`Sin cambio: ${r.skipped.map((x) => `${x.name} (${x.reason})`).join(", ")}.`);
+      setExtMsg({ kind: r.granted.length ? "success" : "error", text: parts.join(" ") });
+      load();
+    } catch (e) {
+      setExtMsg({ kind: "error", text: (e as Error).message });
+    } finally {
+      setExtBusy(false);
+    }
+  }
 
   const load = useCallback(async () => {
     const qs = new URLSearchParams();
@@ -129,7 +152,8 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Total de empleados" value={s.total} hint="Plantilla activa en el filtro" />
         <StatCard label="Confirmados" value={s.confirmed} tone="green" />
-        <StatCard label="Pendientes" value={s.pending} tone="amber" hint={s.falta ? `${s.falta} falta(s)` : undefined} />
+        <StatCard label="Pendientes" value={s.pending} tone="amber"
+          hint={[s.retardo ? `${s.retardo} avisaron retardo` : "", s.lateArrivals ? `${s.lateArrivals} llegaron tarde` : ""].filter(Boolean).join(" · ") || undefined} />
         <StatCard label="Asistencia" value={`${s.percentage}%`} />
       </div>
 
@@ -147,8 +171,15 @@ export default function DashboardPage() {
         <Distribution title="Distribución por turno" groups={s.byShift} />
       </div>
 
+      {extMsg && <Alert kind={extMsg.kind}>{extMsg.text}</Alert>}
       <Card>
-        <CardHeader title="Personal" subtitle={`${rows.length} registro(s)`} />
+        <CardHeader title="Personal" subtitle={`${rows.length} registro(s)`}
+          actions={rows.filter((r) => r.canExtend).length > 0 ? (
+            <Button variant="secondary" className="text-xs" loading={extBusy}
+              onClick={() => extend(rows.filter((r) => r.canExtend).map((r) => r.employeeId))}>
+              Abrir hasta 7:30 a los {rows.filter((r) => r.canExtend).length} sin registro mostrados
+            </Button>
+          ) : undefined} />
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200 text-sm">
             <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -173,14 +204,24 @@ export default function DashboardPage() {
                   </td>
                   <td className="px-4 py-2.5">{r.departmentName}</td>
                   <td className="px-4 py-2.5">{r.shiftName}</td>
-                  <td className="px-4 py-2.5 tabular">{timeMx(r.confirmedAt)}</td>
+                  <td className="px-4 py-2.5 tabular">
+                    {timeMx(r.confirmedAt)}
+                    {r.late && <div className="text-xs font-semibold text-orange-700">llegó tarde</div>}
+                  </td>
                   <td className="px-4 py-2.5">
                     <StatusBadge status={r.status} automatic={r.automatic} />
                     {r.incidentReason && <div className="mt-1 max-w-xs text-xs text-slate-500">{r.incidentReason}{r.incidentBy ? ` · ${r.incidentBy}` : ""}</div>}
+                    {r.lateEta && <div className="mt-1 max-w-xs text-xs text-orange-800">Avisó retardo: llega ~{r.lateEta.slice(0, 5)} · {r.lateReason}</div>}
+                    {r.extensionUntil && <div className="mt-1 max-w-xs text-xs text-sky-800">Extensión hasta {r.extensionUntil.slice(0, 5)} · {r.extensionBy}</div>}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     {r.status !== "CONFIRMADO" && (
-                      <div className="flex justify-end gap-1">
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {r.canExtend && (
+                          <Button variant="secondary" className="px-2.5 py-1 text-xs" disabled={extBusy} onClick={() => extend([r.employeeId])}>
+                            Abrir hasta 7:30
+                          </Button>
+                        )}
                         <Button variant="secondary" className="px-2.5 py-1 text-xs"
                           onClick={() => setIncidentTarget({ employeeId: r.employeeId, fullName: r.fullName, date: r.date, shiftId: r.shiftId, shiftName: r.shiftName, currentStatus: r.status })}>
                           Cambiar estado

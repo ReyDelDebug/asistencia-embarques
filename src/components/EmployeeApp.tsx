@@ -4,15 +4,22 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Alert, api, ApiError, Avatar, Badge, Button, cx, dateLong, dateShort, inputClass, time12, timeMx } from "./ui";
 import GroupTab from "./employee/GroupTab";
 import ProfileTab from "./employee/ProfileTab";
+import LateNoticeForm from "./employee/LateNoticeForm";
+import NotificationsCard from "./employee/NotificationsCard";
 import { useServerClock } from "./useServerClock";
 
 interface View {
   employee: { id: number; fullName: string; employeeNumber: string; role: string; departmentName: string | null; subareaName: string | null };
   localDate: string;
-  shift: { code: string; name: string; openTime: string; closeTime: string; lastAllowed: string };
+  shift: { code: string; name: string; openTime: string; closeTime: string; lastAllowed: string; extensionClose: string; lateLastAllowed: string };
   operationalDate: string;
   windowState: "BEFORE" | "OPEN" | "CLOSED";
-  existing: { operationalDate: string; confirmedAt: string } | null;
+  baseWindowState: "BEFORE" | "OPEN" | "CLOSED";
+  registration: { mode: "NORMAL" | "EXTENSION" | "LATE_NOTICE" | null; lastAllowed: string | null };
+  extension: { closeTime: string; grantedBy: string } | null;
+  lateNotice: { eta: string; reason: string } | null;
+  canNotifyLate: boolean;
+  existing: { operationalDate: string; confirmedAt: string; via: "NORMAL" | "EXTENSION" | "LATE_NOTICE" } | null;
   nextChange: { date: string; shiftCode: string; shiftName: string } | null;
   photoVersion: string | null;
 }
@@ -52,6 +59,7 @@ export default function EmployeeApp() {
   const [pin2, setPin2] = useState("");
   const [justRegistered, setJustRegistered] = useState(false);
   const [tab, setTab] = useState<"asistencia" | "grupo" | "perfil">("asistencia");
+  const [showLateForm, setShowLateForm] = useState(false);
 
   const loadView = useCallback(async () => {
     try {
@@ -255,13 +263,29 @@ export default function EmployeeApp() {
 
       {tab === "asistencia" && screen === "main" && view && (
         <section className="mt-4 space-y-4">
+          {view.registration.mode === "EXTENSION" && view.extension && (
+            <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+              <b>{view.extension.grantedBy}</b> te abrió el registro hasta las <b>{time12(view.extension.closeTime)}</b>.
+            </div>
+          )}
+          {view.lateNotice && (
+            <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm text-orange-900">
+              Avisaste que llegarás tarde (~{time12(view.lateNotice.eta)}). Motivo: {view.lateNotice.reason}.
+              {view.registration.mode === "LATE_NOTICE" || view.baseWindowState !== "CLOSED"
+                ? <> Cuando llegues, confirma tu asistencia (tienes hasta las {time12(view.shift.lateLastAllowed)}).</>
+                : null}
+            </div>
+          )}
           {view.windowState === "OPEN" ? (
             <>
               {error && <Alert>{error}</Alert>}
               <Button variant="success" onClick={onConfirm} loading={busy} className="w-full py-5 text-lg">
                 CONFIRMAR MI ASISTENCIA
               </Button>
-              <p className="text-center text-xs text-slate-500">La hora se toma del servidor al presionar el botón.</p>
+              <p className="text-center text-xs text-slate-500">
+                La hora se toma del servidor al presionar el botón.
+                {view.registration.lastAllowed && view.registration.mode !== "NORMAL" ? ` Disponible hasta las ${time12(view.registration.lastAllowed, true)}.` : ""}
+              </p>
             </>
           ) : (
             <div className="rounded-lg border border-red-200 bg-red-50 p-5 text-center">
@@ -271,9 +295,18 @@ export default function EmployeeApp() {
                   ? `Tu turno (${view.shift.name.toLowerCase()}) abre el registro a las ${time12(view.shift.openTime)}`
                   : `El registro de tu turno (${view.shift.name.toLowerCase()}) cerró a las ${time12(view.shift.closeTime)}`}
               </p>
-              <p className="mt-1 text-xs text-red-700">Si necesitas ayuda, comunícate con tu supervisor.</p>
+              <p className="mt-1 text-xs text-red-700">Si necesitas ayuda, comunícate con tu líder o supervisor.</p>
             </div>
           )}
+          {view.canNotifyLate && !showLateForm && (
+            <Button variant="secondary" onClick={() => setShowLateForm(true)} className="w-full border-orange-300 text-orange-800">
+              Llegaré tarde
+            </Button>
+          )}
+          {view.canNotifyLate && showLateForm && (
+            <LateNoticeForm onCancel={() => setShowLateForm(false)} onDone={() => { setShowLateForm(false); loadView(); }} />
+          )}
+          <NotificationsCard />
           <Button variant="secondary" onClick={() => { setError(null); setScreen("leave"); }} className="w-full">Solicitar vacaciones o PSG</Button>
           <Button variant="ghost" onClick={onLogout} className="w-full">Cerrar sesión</Button>
         </section>
@@ -285,6 +318,11 @@ export default function EmployeeApp() {
             <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-3xl text-emerald-700">✓</div>
             <p className="text-xl font-bold text-emerald-800">¡ASISTENCIA REGISTRADA!</p>
             {!justRegistered && <p className="mt-1 text-sm text-slate-500">Ya habías registrado tu asistencia para este turno.</p>}
+            {view.existing.via !== "NORMAL" && (
+              <p className="mt-2 inline-block rounded-md bg-orange-50 px-2 py-1 text-xs font-semibold text-orange-800">
+                {view.existing.via === "EXTENSION" ? "Registrado con extensión" : "Llegada tarde (con aviso)"}
+              </p>
+            )}
             <dl className="mt-5 space-y-2 text-left text-sm">
               <Row label="Nombre" value={view.employee.fullName} />
               <Row label="Área" value={areaLabel(view)} />

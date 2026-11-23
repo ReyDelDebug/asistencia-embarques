@@ -1,9 +1,17 @@
 import { query, type Queryable } from "../db";
 import type { ShiftCode, ShiftWindowConfig } from "../time";
 
+function addMinutes(t: string, m: number): string {
+  const [h, mi] = t.split(":").map(Number);
+  const total = Math.min(h * 60 + mi + m, 23 * 60 + 59);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}:00`;
+}
+
 export interface Shift extends ShiftWindowConfig {
   reportTitle: string;
   sortOrder: number;
+  extensionClose: string; // hasta cuándo vale una extensión (exclusivo)
+  lateLimit: string; // hasta cuándo registra quien avisó retardo (exclusivo)
 }
 
 export interface Department {
@@ -35,7 +43,7 @@ export async function getSubareas(client?: Queryable): Promise<Subarea[]> {
 export async function getShifts(client?: Queryable): Promise<Shift[]> {
   const rows = await query<{
     id: number; code: ShiftCode; name: string; open_time: string; close_time: string;
-    report_title: string; sort_order: number;
+    report_title: string; sort_order: number; extension_close: string | null; late_limit: string | null;
   }>("SELECT * FROM shifts ORDER BY sort_order, id", [], client);
   return rows.map((r) => ({
     id: r.id,
@@ -45,6 +53,8 @@ export async function getShifts(client?: Queryable): Promise<Shift[]> {
     closeTime: r.close_time,
     reportTitle: r.report_title,
     sortOrder: r.sort_order,
+    extensionClose: r.extension_close ?? addMinutes(r.close_time, 10),
+    lateLimit: r.late_limit ?? addMinutes(r.close_time, 240),
   }));
 }
 

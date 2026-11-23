@@ -37,6 +37,13 @@ async function openWindowNow(code: "DIA" | "NOCHE") {
   await query(`UPDATE shifts SET open_time = $2, close_time = $3 WHERE code = $1`,
     [code, secondsToTime(sec - 1800), secondsToTime(sec + 1800)]);
 }
+/** Ventana normal ya cerrada, pero dentro de la extensión y del límite de retardo. */
+async function afterCloseNow(code: "DIA" | "NOCHE") {
+  const sec = getLocalParts(new Date()).seconds;
+  await query(`UPDATE shifts SET open_time = '00:00:00', close_time = '00:00:01'`);
+  await query(`UPDATE shifts SET open_time = $2, close_time = $3, extension_close = $4, late_limit = $5 WHERE code = $1`,
+    [code, secondsToTime(sec - 3600), secondsToTime(sec - 120), secondsToTime(sec + 900), secondsToTime(sec + 3000)]);
+}
 async function closeAllWindows() {
   await query(`UPDATE shifts SET open_time = '00:00:00', close_time = '00:00:01'`);
 }
@@ -77,7 +84,14 @@ beforeAll(async () => {
   const busy = await fetch(`${BASE}/api/time`).then(() => true).catch(() => false);
   if (busy) throw new Error(`El puerto ${PORT} ya está en uso; detén ese proceso antes de las pruebas.`);
   server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "-p", String(PORT)], {
-    env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL!, NODE_ENV: "production" },
+    env: {
+      ...process.env, DATABASE_URL: process.env.DATABASE_URL!, NODE_ENV: "production",
+      // Llaves VAPID SOLO de prueba (generadas para las pruebas; no se usan en producción)
+      VAPID_PUBLIC_KEY: "BI1yyXhARyfUsd26oIBEAbxOA2_s-gWqnvzIiYLgIFkQb9gm4s8Kd78jmfEzFY8DA_aTxK5FnKR8EQZNZr3V3kY",
+      VAPID_PRIVATE_KEY: "pMmFGVmLsIzyMROEirsQLOmHkF9qELbtcRhNrFXiVAw",
+      VAPID_SUBJECT: "mailto:pruebas@example.com",
+      CRON_SECRET: "secreto-de-pruebas-e2e-123456",
+    },
     stdio: "pipe",
   });
   server.stderr?.on("data", (d) => process.stderr.write(`[next] ${d}`));
@@ -288,6 +302,64 @@ describe("API por HTTP", () => {
     expect(pinChange.status).toBe(400);
   });
 
+  it("llegaré tarde y extensión por HTTP (líder y supervisor)", async () => {
+    await openWindowNow("DIA");
+    const emp = new Client();
+    await emp.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "1011", pin: pinOf(S, "Arturo Martínez") } });
+    const noReason = await emp.req("/api/me/late", { method: "POST", json: { eta: "23:00", reason: "" } });
+    expect(noReason.status).toBe(400);
+
+    await afterCloseNow("DIA");
+    // Ya cerró: no puede registrar ni avisar retardo
+    expect((await emp.req("/api/attendance", { method: "POST" })).status).toBe(403);
+    expect((await emp.req("/api/me/late", { method: "POST", json: { eta: "23:00", reason: "Tráfico" } })).status).toBe(403);
+
+    // El líder de Central le abre el registro
+    const leader = new Client();
+    await leader.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "1006", pin: pinOf(S, "Isaías Romero") } });
+    const g = await (await leader.req("/api/me/group")).json();
+    const row = g.leaderView.rows.find((r: { fullName: string }) => r.fullName === "Arturo Martínez");
+    expect(row.canExtend).toBe(true);
+    const ext = await leader.req("/api/me/extensions", { method: "POST", json: { employeeIds: [row.employeeId] } });
+    expect((await ext.json()).granted).toEqual(["Arturo Martínez"]);
+    // Un empleado normal no puede abrir registros
+    expect((await emp.req("/api/me/extensions", { method: "POST", json: { employeeIds: [row.employeeId] } })).status).toBe(403);
+    const ok = await emp.req("/api/attendance", { method: "POST" });
+    expect(ok.status).toBe(201);
+    expect((await ok.json()).record.via).toBe("EXTENSION");
+
+    // El supervisor abre a alguien de RC
+    const adm = new Client();
+    await adm.req("/api/auth/admin/login", { method: "POST", json: { username: "manuel", password: S.admin.password } });
+    const dash = await (await adm.req("/api/admin/dashboard?shift=DIA")).json();
+    const rc = dash.rows.find((r: { fullName: string }) => r.fullName === "Isaac Antonio");
+    expect(rc.canExtend).toBe(true);
+    const r2 = await adm.req("/api/admin/extensions", { method: "POST", json: { employeeIds: [rc.employeeId] } });
+    expect((await r2.json()).granted).toEqual(["Isaac Antonio"]);
+  });
+
+  it("notificaciones: llave pública, suscripción y endpoint programado protegido", async () => {
+    const key = await (await fetch(`${BASE}/api/push/key`)).json();
+    expect(key.enabled).toBe(true);
+    expect(key.publicKey).toMatch(/^B/);
+    const emp = new Client();
+    await emp.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "1019", pin: pinOf(S, "Carlos González") } });
+    const sub = { endpoint: "https://push.example.com/e2e", keys: { p256dh: "B".repeat(87), auth: "A".repeat(22) } };
+    expect((await emp.req("/api/me/push", { method: "POST", json: { subscription: sub } })).status).toBe(201);
+    expect((await (await emp.req("/api/me/push")).json()).subscriptions).toBe(1);
+
+    expect((await fetch(`${BASE}/api/cron/reminders`, { method: "POST" })).status).toBe(401);
+    expect((await fetch(`${BASE}/api/cron/reminders`, { method: "POST", headers: { Authorization: "Bearer incorrecto" } })).status).toBe(401);
+    const ok = await fetch(`${BASE}/api/cron/reminders`, { method: "POST", headers: { Authorization: "Bearer secreto-de-pruebas-e2e-123456" } });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).ok).toBe(true);
+    const sw = await fetch(`${BASE}/sw.js`);
+    expect(sw.status).toBe(200);
+    expect(await sw.text()).toContain("showNotification");
+    const manifest = await (await fetch(`${BASE}/manifest.webmanifest`)).json();
+    expect(manifest.display).toBe("standalone");
+  });
+
   it("encabezados de seguridad", async () => {
     const r = await fetch(`${BASE}/`);
     expect(r.headers.get("x-frame-options")).toBe("DENY");
@@ -412,6 +484,39 @@ describe("20. Funcionamiento desde celular (Chrome con emulación)", () => {
     expect(text).toContain("Jonathan Luna"); // registró en la prueba del iPhone
     expect(text).not.toContain("Enrique Suárez"); // es de RC
     await page.screenshot({ path: `${SHOTS}/lider-grupo.png`, fullPage: true });
+    await ctx.close();
+  });
+
+  it("botón Llegaré tarde y recordatorios en el celular", async () => {
+    await openWindowNow("DIA");
+    const nowSec = getLocalParts(new Date()).seconds;
+    await query(`UPDATE shifts SET late_limit = $1 WHERE code = 'DIA'`, [secondsToTime(nowSec + 5400)]);
+    const eta = secondsToTime(nowSec + 2400).slice(0, 5);
+    const ctx = await browser.createBrowserContext();
+    const page = await ctx.newPage();
+    await page.setViewport(devices[1].viewport);
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle0" });
+    await page.type("#num", "1018");
+    await page.click("button[type=submit]");
+    await page.waitForSelector("#pin");
+    await page.type("#pin", pinOf(S, "Norberto Sánchez"));
+    await page.click("button[type=submit]");
+    await page.waitForFunction(() => document.body.innerText.includes("Llegaré tarde"));
+    await page.waitForFunction(() => document.body.innerText.includes("Recordatorios"));
+    const btn = await page.waitForSelector("xpath/.//button[contains(., 'Llegaré tarde')]");
+    await btn!.tap();
+    await page.waitForSelector("input[type=time]");
+    await page.$eval("input[type=time]", (el, v) => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      set.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }, eta);
+    await page.type("textarea", "Se descompuso el transporte");
+    await page.screenshot({ path: `${SHOTS}/android-6-llegare-tarde.png`, fullPage: true });
+    const send = await page.waitForSelector("xpath/.//button[contains(., 'Enviar aviso')]");
+    await send!.tap();
+    await page.waitForFunction(() => document.body.innerText.includes("Avisaste que llegarás tarde"));
+    await page.screenshot({ path: `${SHOTS}/android-7-aviso-enviado.png`, fullPage: true });
     await ctx.close();
   });
 

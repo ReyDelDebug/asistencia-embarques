@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, api, Avatar, Badge, cx, dateLong, StatusBadge, timeMx } from "../ui";
+import { Alert, api, Avatar, Badge, Button, cx, dateLong, StatusBadge, time12, timeMx } from "../ui";
 
 interface Member {
   employeeId: number; fullName: string; role: string; subareaName: string | null; shiftName: string;
@@ -10,18 +10,23 @@ interface Member {
 interface LeaderRow {
   employeeId: number; fullName: string; role: string; subareaName: string | null; status: string;
   confirmedAt: string | null; photoVersion: string | null;
+  late: boolean; lateEta: string | null; lateReason: string | null; extensionUntil: string | null; canExtend: boolean;
 }
 interface Group {
   departmentName: string | null;
   members: Member[];
   isLeader: boolean;
-  leaderView: null | { date: string; shiftCode: string; shiftName: string; confirmed: number; total: number; rows: LeaderRow[] };
+  leaderView: null | {
+    date: string; shiftCode: string; shiftName: string; extensionClose: string; confirmed: number; total: number; rows: LeaderRow[];
+  };
 }
 
 export default function GroupTab() {
   const [data, setData] = useState<Group | null>(null);
   const [shift, setShift] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -38,6 +43,25 @@ export default function GroupTab() {
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
   }, [data?.isLeader, load]);
+
+  async function extend(ids: number[]) {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const r = await api<{ granted: string[]; skipped: { name: string; reason: string }[] }>("/api/me/extensions", {
+        method: "POST", json: { employeeIds: ids },
+      });
+      const parts = [];
+      if (r.granted.length) parts.push(`Registro abierto para: ${r.granted.join(", ")}.`);
+      if (r.skipped.length) parts.push(`Sin cambio: ${r.skipped.map((x) => `${x.name} (${x.reason})`).join(", ")}.`);
+      setNotice({ kind: r.granted.length ? "success" : "error", text: parts.join(" ") });
+      load();
+    } catch (e) {
+      setNotice({ kind: "error", text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   if (error) return <Alert>{error}</Alert>;
   if (!data) return <p className="py-10 text-center text-sm text-slate-500">Cargando…</p>;
@@ -64,6 +88,13 @@ export default function GroupTab() {
             </div>
             <p className="mt-1 text-xs text-slate-500">{dateLong(lv.date)} · Turno {lv.shiftName}</p>
             <p className="mt-2 text-2xl font-bold tabular text-slate-900">{lv.confirmed} <span className="text-base font-medium text-slate-500">de {lv.total} registrados</span></p>
+            {lv.rows.filter((r) => r.canExtend).length > 1 && (
+              <Button variant="secondary" className="mt-2 w-full text-xs" loading={busy}
+                onClick={() => extend(lv.rows.filter((r) => r.canExtend).map((r) => r.employeeId))}>
+                Abrir registro hasta {time12(lv.extensionClose)} a todos los que faltan ({lv.rows.filter((r) => r.canExtend).length})
+              </Button>
+            )}
+            {notice && <div className="mt-2"><Alert kind={notice.kind}>{notice.text}</Alert></div>}
           </div>
           <ul className="divide-y divide-slate-100">
             {lv.rows.map((r) => (
@@ -74,7 +105,20 @@ export default function GroupTab() {
                   <p className="text-xs text-slate-500">
                     {r.role === "LEADER" ? "Líder" : "Empleado"}{r.subareaName ? ` · ${r.subareaName}` : ""}
                     {r.confirmedAt ? ` · ${timeMx(r.confirmedAt)}` : ""}
+                    {r.late && <span className="font-semibold text-orange-700"> · llegó tarde</span>}
                   </p>
+                  {r.lateEta && r.status !== "CONFIRMADO" && (
+                    <p className="text-xs text-orange-800">Llega ~{time12(r.lateEta)} · {r.lateReason}</p>
+                  )}
+                  {r.extensionUntil && r.status !== "CONFIRMADO" && (
+                    <p className="text-xs text-sky-800">Registro abierto hasta {time12(r.extensionUntil)}</p>
+                  )}
+                  {r.canExtend && (
+                    <button disabled={busy} onClick={() => extend([r.employeeId])}
+                      className="mt-1 text-xs font-semibold text-sky-800 underline disabled:opacity-50">
+                      Abrir registro hasta {time12(lv.extensionClose)}
+                    </button>
+                  )}
                 </div>
                 <StatusBadge status={r.status} />
               </li>

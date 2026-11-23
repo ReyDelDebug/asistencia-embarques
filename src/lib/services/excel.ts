@@ -104,14 +104,14 @@ export async function buildAttendanceWorkbook(filter: ExportFilter, now: Date): 
       r.shiftName,
       dateCell(r.date),
       r.confirmedAt ? localDateTimeCell(r.confirmedAt) : null,
-      STATUS_LABELS[r.status],
+      r.status === "CONFIRMADO" && r.late ? "Confirmado (retardo)" : STATUS_LABELS[r.status],
       obs,
     ]);
     row.getCell(6).numFmt = "dd/mm/yyyy";
     row.getCell(7).numFmt = "hh:mm:ss";
     row.getCell(1).alignment = { horizontal: "center" };
     const statusCell = row.getCell(8);
-    const color = r.status === "CONFIRMADO" ? "FF166534" : r.status === "PENDIENTE" ? "FF92400E" : r.status === "FALTA" ? "FF991B1B" : "FF334155";
+    const color = r.status === "CONFIRMADO" ? (r.late ? "FFB45309" : "FF166534") : r.status === "PENDIENTE" || r.status === "RETARDO" ? "FF92400E" : r.status === "FALTA" ? "FF991B1B" : "FF334155";
     statusCell.font = { bold: true, color: { argb: color } };
   }
   ws1.autoFilter = { from: { row: 4, column: 1 }, to: { row: Math.max(4, ws1.rowCount), column: cols1.length } };
@@ -127,6 +127,8 @@ export async function buildAttendanceWorkbook(filter: ExportFilter, now: Date): 
     [days > 1 ? "Total de registros esperados (empleado × día)" : "Total de empleados", stats.total],
     ["Confirmados", stats.confirmed],
     ["Pendientes", stats.pending],
+    ["Avisaron retardo (sin llegar)", stats.retardo],
+    ["Llegaron tarde (registro con extensión o aviso)", stats.lateArrivals],
     ["Faltas", stats.falta],
     ["Vacaciones", stats.vacaciones],
     ["Incapacidades", stats.incapacidad],
@@ -200,11 +202,24 @@ export async function buildAttendanceWorkbook(filter: ExportFilter, now: Date): 
   }>(
     `SELECT a.operational_date, a.confirmed_at AS at, 'Asistencia confirmada' AS kind, e.employee_number, e.full_name,
             d.name AS department_name, s.name AS shift_name,
-            concat('Confirmada por el empleado', CASE WHEN a.ip IS NOT NULL THEN concat(' · IP ', a.ip) END) AS detail,
+            concat('Confirmada por el empleado', CASE a.via WHEN 'EXTENSION' THEN ' (con extensión)' WHEN 'LATE_NOTICE' THEN ' (llegó tarde con aviso)' ELSE '' END,
+                   CASE WHEN a.ip IS NOT NULL THEN concat(' · IP ', a.ip) END) AS detail,
             e.full_name AS by_name
      FROM attendance a JOIN employees e ON e.id = a.employee_id JOIN shifts s ON s.id = a.shift_id
      LEFT JOIN departments d ON d.id = a.department_id
      WHERE a.operational_date BETWEEN $1 AND $2 ${extraAtt}
+     UNION ALL
+     SELECT ln.operational_date, ln.created_at, 'Aviso: llegaré tarde', e.employee_number, e.full_name,
+            d.name, s.name, concat('Llega ~', to_char(ln.eta, 'HH24:MI'), ' · ', ln.reason), e.full_name
+     FROM late_notices ln JOIN employees e ON e.id = ln.employee_id JOIN shifts s ON s.id = ln.shift_id
+     LEFT JOIN departments d ON d.id = e.department_id
+     WHERE ln.operational_date BETWEEN $1 AND $2 ${extraInc.replaceAll("i.shift_id", "ln.shift_id")}
+     UNION ALL
+     SELECT x.operational_date, x.created_at, 'Extensión de registro', e.employee_number, e.full_name,
+            d.name, s.name, concat('Hasta ', to_char(x.close_time, 'HH24:MI')), x.granted_by_label
+     FROM attendance_extensions x JOIN employees e ON e.id = x.employee_id JOIN shifts s ON s.id = x.shift_id
+     LEFT JOIN departments d ON d.id = e.department_id
+     WHERE x.operational_date BETWEEN $1 AND $2 ${extraInc.replaceAll("i.shift_id", "x.shift_id")}
      UNION ALL
      SELECT i.operational_date, i.created_at, concat('Incidencia: ', i.type), e.employee_number, e.full_name,
             d.name, s.name, i.reason, u.display_name

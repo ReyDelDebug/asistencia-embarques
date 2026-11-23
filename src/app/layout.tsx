@@ -5,6 +5,8 @@ export const metadata: Metadata = {
   title: "Control de Asistencia · Embarques",
   description: "Registro de asistencia del personal de Embarques",
   robots: { index: false, follow: false },
+  appleWebApp: { capable: true, title: "Asistencia", statusBarStyle: "default" },
+  icons: { icon: "/icon-192.png", apple: "/apple-touch-icon.png" },
 };
 
 export const viewport: Viewport = {

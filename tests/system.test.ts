@@ -16,6 +16,8 @@ import { cancelMyLeaveRequest, createLeaveRequest, decideLeaveRequest, listLeave
 import { getRol, mondayOf, saveRol } from "../src/lib/services/rol";
 import { decodeImage, deleteEmployeePhoto, getPhotoFor, setEmployeePhoto } from "../src/lib/services/photos";
 import { getMyGroup } from "../src/lib/services/group";
+import { createLateNotice, grantExtensions } from "../src/lib/services/registration";
+import { saveSubscription, sendReminders, sendTestNotification, type PushSender } from "../src/lib/services/push";
 import { revokeIncident, setIncident } from "../src/lib/services/incidents";
 import { buildReport, saveOperationalData } from "../src/lib/services/report";
 import { computeStats, getRoster } from "../src/lib/services/roster";
@@ -249,6 +251,7 @@ describe("16. Reporte automático (día completo)", () => {
       "*RAMPA C:* 5+1", "",
       "*LAVADORAS:* 4+1", "",
       "*TOTAL:* 23", "",
+      "*RETARDO:*", "",
       "*FALTA:*", "",
       "*PSG:*", "",
       "*VACACIONES:*", "",
@@ -703,5 +706,148 @@ describe("Mi grupo: cada quien ve solo a su área", () => {
     expect(gm.leaderView!.rows.every((r) => r.subareaName === null)).toBe(true);
     expect(gm.leaderView!.total).toBe(6);
     expect(gm.leaderView!.rows.map((r) => r.fullName)).not.toContain("Isaías Romero");
+  });
+});
+
+describe("Extensión del registro hasta 7:30 (supervisor y líder)", () => {
+  const D = "2026-12-09";
+  it("el líder abre el registro solo a personas de su área; un empleado no puede", async () => {
+    await expect(confirmAt("Arturo Martínez", `${D}T07:22:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    const isaias = await sessionAt("Isaías Romero");
+    const gm = await sessionAt("Gerardo Marroquín", "731904");
+    const normal = await sessionAt("Alexis Altamirano");
+    const arturo = await employeeByName("Arturo Martínez");
+    await expect(grantExtensions([arturo.id], { type: "LEADER", employee: gm }, "ip", mx(`${D}T07:22:00`)))
+      .rejects.toMatchObject({ status: 403 });
+    await expect(grantExtensions([arturo.id], { type: "LEADER", employee: normal }, "ip", mx(`${D}T07:22:00`)))
+      .rejects.toMatchObject({ status: 403 });
+    const r = await grantExtensions([arturo.id], { type: "LEADER", employee: isaias }, "ip", mx(`${D}T07:22:00`));
+    expect(r.granted).toEqual(["Arturo Martínez"]);
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T07:25:00`));
+    expect(rows.find((x) => x.fullName === "Arturo Martínez")).toMatchObject({
+      status: "PENDIENTE", extensionUntil: "07:30:00", canExtend: false, extensionBy: "Isaías Romero (líder)",
+    });
+    const c = await confirmAt("Arturo Martínez", `${D}T07:29:59`);
+    expect(c.via).toBe("EXTENSION");
+  });
+
+  it("el supervisor abre a varios; a las 7:30 vence y quien no registró queda en falta", async () => {
+    const maxi = await employeeByName("Maximiliano");
+    const moises = await employeeByName("Moisés Muñoz");
+    const r = await grantExtensions([maxi.id, moises.id], { type: "USER", user: admin }, "ip", mx(`${D}T07:25:00`));
+    expect(r.granted.sort()).toEqual(["Maximiliano", "Moisés Muñoz"]);
+    await confirmAt("Moisés Muñoz", `${D}T07:27:00`);
+    await expect(confirmAt("Maximiliano", `${D}T07:30:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T07:30:00`));
+    expect(rows.find((x) => x.fullName === "Maximiliano")!.status).toBe("FALTA");
+    const late = await grantExtensions([(await employeeByName("Manuel Cruz")).id], { type: "USER", user: admin }, "ip", mx(`${D}T07:30:00`));
+    expect(late.granted).toHaveLength(0);
+    expect(late.skipped[0].reason).toMatch(/hora límite/);
+  });
+
+  it("aparece en el reporte (RETARDO) y en el Excel como 'Confirmado (retardo)'", async () => {
+    const rep = await buildReport(D, "DIA", mx(`${D}T08:00:00`));
+    expect(rep.text).toContain("*RETARDO:*\n- ");
+    expect(rep.lists.RETARDO.sort()).toEqual([
+      "Arturo Martínez (CENTRAL) · llegó 07:29 (con extensión)",
+      "Moisés Muñoz (CENTRAL) · llegó 07:27 (con extensión)",
+    ]);
+    expect(rep.departments.find((d) => d.label === "CENTRAL")!.employees).toBe(2); // sí cuentan como presentes
+    const { buffer } = await buildAttendanceWorkbook({ from: D, to: D, shiftId: 1 }, mx(`${D}T08:00:00`));
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet("ASISTENCIA GENERAL")!;
+    const row = ws.getRows(5, ws.rowCount - 4)!.find((x) => x.getCell(2).value === "Arturo Martínez")!;
+    expect(row.getCell(8).value).toBe("Confirmado (retardo)");
+    expect(String(row.getCell(9).value)).toContain("extensión hasta 07:30");
+  });
+});
+
+describe("Llegaré tarde", () => {
+  const D = "2026-12-10";
+  it("motivo obligatorio, hora válida y solo antes del cierre", async () => {
+    const antonio = await sessionAt("Antonio Rosado");
+    await expect(createLateNotice(antonio, { eta: "08:00", reason: " " }, "ip", mx(`${D}T06:50:00`))).rejects.toMatchObject({ code: "REASON_REQUIRED" });
+    await expect(createLateNotice(antonio, { eta: "12:00", reason: "Tráfico" }, "ip", mx(`${D}T06:50:00`))).rejects.toMatchObject({ code: "BAD_ETA" });
+    await expect(createLateNotice(antonio, { eta: "08:00", reason: "Tráfico" }, "ip", mx(`${D}T07:21:00`))).rejects.toMatchObject({ code: "TOO_LATE" });
+    const n = await createLateNotice(antonio, { eta: "08:00", reason: "Se descompuso el transporte" }, "ip", mx(`${D}T06:50:00`));
+    expect(n.eta).toBe("08:00:00");
+    await expect(createLateNotice(antonio, { eta: "08:10", reason: "Otra vez" }, "ip", mx(`${D}T06:55:00`))).rejects.toMatchObject({ code: "ALREADY_NOTIFIED" });
+  });
+
+  it("después del cierre: el líder y el supervisor lo ven como 'Avisó retardo' con motivo", async () => {
+    const view = await getAttendanceView(await sessionAt("Antonio Rosado"), mx(`${D}T07:40:00`));
+    expect(view).toMatchObject({ windowState: "OPEN", baseWindowState: "CLOSED", registration: { mode: "LATE_NOTICE" }, canNotifyLate: false });
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T07:40:00`));
+    expect(rows.find((x) => x.fullName === "Antonio Rosado")).toMatchObject({ status: "RETARDO", lateEta: "08:00:00" });
+    const g = await getMyGroup(await sessionAt("Isaías Romero"), mx(`${D}T07:40:00`));
+    expect(g.leaderView!.rows.find((x) => x.fullName === "Antonio Rosado")).toMatchObject({
+      status: "RETARDO", lateReason: "Se descompuso el transporte",
+    });
+    const rep = await buildReport(D, "DIA", mx(`${D}T07:40:00`));
+    expect(rep.lists.RETARDO).toEqual(["Antonio Rosado (CENTRAL) · avisó, llega ~08:00"]);
+    expect(rep.lists.FALTA).not.toContain("Antonio Rosado (CENTRAL)");
+  });
+
+  it("registra a la hora que llega y el reporte lo muestra", async () => {
+    const c = await confirmAt("Antonio Rosado", `${D}T08:03:00`);
+    expect(c.via).toBe("LATE_NOTICE");
+    const rep = await buildReport(D, "DIA", mx(`${D}T09:00:00`));
+    expect(rep.lists.RETARDO).toEqual(["Antonio Rosado (CENTRAL) · llegó 08:03"]);
+    expect(rep.text).toContain("*RETARDO:*\n- Antonio Rosado (CENTRAL) · llegó 08:03");
+  });
+
+  it("si avisó pero no llega antes del límite (11:20), queda como falta", async () => {
+    await createLateNotice(await sessionAt("Julio César"), { eta: "09:00", reason: "Cita médica" }, "ip", mx(`${D}T07:00:00`));
+    const at = async (t: string) => (await getRoster({ date: D, shiftId: 1 }, mx(`${D}T${t}`))).find((x) => x.fullName === "Julio César")!;
+    expect((await at("11:19:59")).status).toBe("RETARDO");
+    const after = await at("11:20:00");
+    expect(after.status).toBe("FALTA");
+    expect(after.observations).toContain("No registró");
+    await expect(confirmAt("Julio César", `${D}T11:20:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+  });
+});
+
+describe("Recordatorios push (7:05 y 7:15 / 19:05 y 19:15)", () => {
+  const D = "2026-12-11";
+  const sub = (n: number) => ({ endpoint: `https://push.example.com/send/abc${n}`, keys: { p256dh: "B".repeat(87), auth: "A".repeat(22) } });
+  const sent: { endpoint: string; payload: { title: string; body: string } }[] = [];
+  const fake: PushSender = async (s, payload) => {
+    sent.push({ endpoint: s.endpoint, payload: JSON.parse(payload) });
+    return { statusCode: s.endpoint.endsWith("abc4") ? 410 : 201 };
+  };
+
+  it("valida la suscripción", async () => {
+    const e = await sessionAt("Carlos González");
+    await expect(saveSubscription(e, { endpoint: "http://inseguro.com/x", keys: { p256dh: "x", auth: "y" } }, "ua")).rejects.toMatchObject({ code: "BAD_SUBSCRIPTION" });
+    await expect(sendTestNotification(e, fake)).rejects.toMatchObject({ code: "NO_SUBSCRIPTION" });
+  });
+
+  it("avisa solo a quien no ha registrado, sin aviso de retardo, de su turno, y sin repetir", async () => {
+    await saveSubscription(await sessionAt("Carlos González"), sub(1), "ua"); // no registra → recibe
+    await saveSubscription(await sessionAt("Norberto Sánchez"), sub(2), "ua"); // registra a las 6:00 → no recibe
+    await saveSubscription(await sessionAt("Miguel Cruz"), sub(3), "ua"); // avisa retardo → no recibe
+    await saveSubscription(await sessionAt("Gregorio Meraz"), sub(4), "ua"); // noche; su suscripción ya no existe (410)
+    await confirmAt("Norberto Sánchez", `${D}T06:00:00`);
+    await createLateNotice(await sessionAt("Miguel Cruz"), { eta: "08:00", reason: "Trámite" }, "ip", mx(`${D}T06:30:00`));
+
+    const r1 = await sendReminders(mx(`${D}T07:05:00`), fake);
+    expect(r1.results).toEqual([{ shift: "DIA", kind: "R15", targets: 1, sent: 1, removed: 0 }]);
+    expect(sent[0]).toMatchObject({ endpoint: sub(1).endpoint });
+    expect(sent[0].payload.body).toContain("07:20 a. m.");
+
+    const again = await sendReminders(mx(`${D}T07:06:00`), fake);
+    expect(again.results[0]).toMatchObject({ kind: "R15", sent: 0 });
+
+    const r2 = await sendReminders(mx(`${D}T07:15:00`), fake);
+    expect(r2.results).toEqual([{ shift: "DIA", kind: "R5", targets: 1, sent: 1, removed: 0 }]);
+    expect(sent[1].payload.title).toContain("Últimos minutos");
+
+    expect((await sendReminders(mx(`${D}T12:00:00`), fake)).results).toEqual([]);
+
+    const night = await sendReminders(mx(`${D}T19:05:00`), fake);
+    expect(night.results).toEqual([{ shift: "NOCHE", kind: "R15", targets: 1, sent: 0, removed: 1 }]);
+    const left = await queryOne<{ n: number }>("SELECT count(*)::int n FROM push_subscriptions WHERE endpoint = $1", [sub(4).endpoint]);
+    expect(left!.n).toBe(0);
   });
 });

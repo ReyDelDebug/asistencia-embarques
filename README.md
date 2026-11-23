@@ -30,6 +30,20 @@ Aplicación web para que cada empleado confirme su asistencia desde el celular c
 
 Cada trabajador solo puede registrar en la ventana del turno que le asignó el supervisor en el **rol de turno**. Quien no registra antes de las 07:20 (o 19:20 en noche) aparece como **Falta** en el panel, el reporte y el Excel.
 
+**Extensión hasta las 7:30 (supervisor y líderes)**
+- A quien no registró a tiempo, el supervisor (panel) o el líder de su área ("Mi grupo") le abre el registro hasta las 07:30 / 19:30, a una persona o a todos los que faltan.
+- El registro queda marcado "con extensión" con quién la autorizó; aparece en *RETARDO* del reporte y como "Confirmado (retardo)" en el Excel.
+- Un líder solo puede abrir el registro a personas de su área. A las 7:30 la extensión vence sola.
+
+**Llegaré tarde**
+- Antes del cierre (7:20 / 19:20), el trabajador avisa la hora aproximada de llegada y el **motivo (obligatorio)**.
+- Líder y supervisor lo ven como "Avisó retardo" con hora y motivo; en el reporte aparece en *RETARDO*.
+- Registra cuando llegue (hasta las 11:19 a. m. / 11:19 p. m.); si no llega, queda como Falta.
+
+**Recordatorios (notificaciones push)**
+- El trabajador toca "Activar avisos" una vez. A las 7:05 y 7:15 (19:05 y 19:15 en noche) recibe un aviso si no ha registrado, no tiene incidencia y no avisó retardo.
+- En iPhone primero hay que "Agregar a pantalla de inicio" (iOS 16.4+). Ver configuración en la sección 4b.
+
 **Áreas:** Central (con subárea **PT**), RC y Lavadoras. Central lleva dos líderes (uno de Central y uno de PT); RC y Lavadoras, uno cada una. Los líderes y quiénes pertenecen a PT se asignan desde **Empleados**.
 
 **Rol de turno (`/admin/rol`)**
@@ -130,6 +144,35 @@ npm run db:setup      # aplica migraciones + carga inicial
 
 ---
 
+### 4b. Activar las notificaciones (una sola vez)
+
+1. **Llaves VAPID.** En la terminal, dentro del proyecto: `npx web-push generate-vapid-keys`. Copia la *Public Key* y la *Private Key*.
+2. **Clave del programador.** `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"` y copia el resultado.
+3. **Vercel → Settings → Environment Variables**, agrega:
+   - `VAPID_PUBLIC_KEY` = Public Key
+   - `VAPID_PRIVATE_KEY` = Private Key
+   - `VAPID_SUBJECT` = `mailto:tu-correo@ejemplo.com`
+   - `CRON_SECRET` = la clave del paso 2
+   
+   Luego **Despliegues → ⋯ → Redeploy**.
+4. **Supabase → Database → Extensions**: activa `pg_cron` y `pg_net`.
+5. **Supabase → SQL Editor**, pega esto (cambia la URL y `TU_CRON_SECRET`) y presiona **Run**:
+
+```sql
+select cron.schedule(
+  'recordatorios-asistencia',
+  '5,15 1,13 * * *',   -- 13:05/13:15 UTC = 7:05/7:15 a. m. y 01:05/01:15 UTC = 7:05/7:15 p. m. (Ciudad de México)
+  $$ select net.http_post(
+       url := 'https://asistencia-embarques-joll.vercel.app/api/cron/reminders',
+       headers := jsonb_build_object('Authorization', 'Bearer TU_CRON_SECRET', 'Content-Type', 'application/json'),
+       body := '{}'::jsonb
+     ); $$
+);
+```
+
+Para revisar que se ejecuta: `select status, return_message, start_time from cron.job_run_details order by start_time desc limit 10;`
+Para quitarlo: `select cron.unschedule('recordatorios-asistencia');`
+
 ### Actualizar una instalación existente
 
 Cuando recibas una versión nueva del proyecto:
@@ -176,8 +219,8 @@ Fija el mensaje en el grupo. En el celular pueden usar "Agregar a pantalla de in
 ## 7. Pruebas
 
 ```bash
-npm test          # 73 pruebas: horarios, autenticación, reglas, reporte, Excel, auditoría (PostgreSQL real)
-npm run test:e2e  # 16 pruebas: servidor real + HTTP + Chrome emulando iPhone y Android
+npm test          # 82 pruebas: horarios, autenticación, reglas, reporte, Excel, auditoría (PostgreSQL real)
+npm run test:e2e  # 19 pruebas: servidor real + HTTP + Chrome emulando iPhone y Android
 ```
 
 Las pruebas usan una base **separada**, que se borra en cada corrida (`TEST_DATABASE_URL`, por defecto `postgres://postgres@localhost:5432/asistencia_test`). Por seguridad, solo corren si el nombre de la base contiene `test`.
@@ -200,4 +243,4 @@ tests/                       Pruebas de integración y e2e
 
 ## 9. Tablas
 
-`shifts`, `departments`, `subareas`, `employees`, `employee_photos`, `shift_assignments` (rol de turno), `leave_requests` (vacaciones/PSG), `users`, `attendance` (única por empleado + fecha operativa + turno, inmutable), `incidents` (una activa por empleado/fecha/turno, nunca se borran), `operational_reports`, `operational_extras`, `sessions`, `login_attempts`, `audit_logs` (inmutable), `schema_migrations`.
+`shifts`, `departments`, `subareas`, `employees`, `employee_photos`, `attendance_extensions`, `late_notices`, `push_subscriptions`, `push_reminders_sent`, `shift_assignments` (rol de turno), `leave_requests` (vacaciones/PSG), `users`, `attendance` (única por empleado + fecha operativa + turno, inmutable), `incidents` (una activa por empleado/fecha/turno, nunca se borran), `operational_reports`, `operational_extras`, `sessions`, `login_attempts`, `audit_logs` (inmutable), `schema_migrations`.

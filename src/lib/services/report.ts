@@ -1,6 +1,6 @@
 import { query, queryOne, withTransaction } from "../db";
 import { AppError } from "../errors";
-import { formatDateReport, getLocalParts, isValidDateString, windowState } from "../time";
+import { formatDateReport, formatTimeLocal, getLocalParts, isValidDateString, windowState } from "../time";
 import { logAudit } from "./audit";
 import type { SessionUser } from "./auth";
 import { getRoster, loadCatalog, type RosterRow } from "./roster";
@@ -103,7 +103,7 @@ export interface ReportData {
   departments: { id: number; subareaId: number | null; label: string; employees: number; leaders: number; hasLeader: boolean; plantilla: number }[];
   extras: OperationalExtra[];
   total: number;
-  lists: Record<"FALTA" | "PSG" | "VACACIONES" | "INCAPACIDAD" | "BAJA" | "PENDIENTE", string[]>;
+  lists: Record<"FALTA" | "PSG" | "VACACIONES" | "INCAPACIDAD" | "BAJA" | "PENDIENTE" | "RETARDO", string[]>;
   operational: OperationalData;
   text: string;
 }
@@ -162,6 +162,13 @@ export async function buildReport(date: string, shiftCode: string, now: Date): P
     INCAPACIDAD: listOf("INCAPACIDAD"),
     BAJA: listOf("BAJA"),
     PENDIENTE: listOf("PENDIENTE"),
+    RETARDO: rows
+      .filter((r) => r.status === "RETARDO" || (r.status === "CONFIRMADO" && r.late))
+      .map((r) => {
+        if (r.status === "RETARDO") return `${nameWithArea(r)} · avisó, llega ~${r.lateEta!.slice(0, 5)}`;
+        const at = formatTimeLocal(r.confirmedAt!).slice(0, 5);
+        return `${nameWithArea(r)} · llegó ${at}${r.via === "EXTENSION" ? " (con extensión)" : ""}`;
+      }),
   };
 
   const lines: string[] = [];
@@ -182,6 +189,7 @@ export async function buildReport(date: string, shiftCode: string, now: Date): P
     lines.push("");
   };
   if (lists.PENDIENTE.length > 0) listBlock("PENDIENTES POR CONFIRMAR", lists.PENDIENTE);
+  listBlock("RETARDO", lists.RETARDO);
   listBlock("FALTA", lists.FALTA);
   listBlock("PSG", lists.PSG);
   listBlock("VACACIONES", lists.VACACIONES);

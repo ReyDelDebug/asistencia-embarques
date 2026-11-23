@@ -1,13 +1,14 @@
 import { queryOne } from "../db";
 import { AppError } from "../errors";
 import {
-  addDays, findOpenShift, getLocalParts, lastAllowedSecond, timeToSeconds, windowState, type WindowState,
+  addDays, findOpenShift, getLocalParts, lastAllowedSecond, timeToSeconds, type WindowState,
 } from "../time";
 import { logAudit } from "./audit";
 import type { RequestMeta, SessionEmployee } from "./auth";
 import { getShifts, type Shift } from "./catalog";
 import { getEffectiveShiftId, getNextChange, type NextChange } from "./rol";
 import { getPhotoVersion } from "./photos";
+import { evaluateRegistration, getExtension, getLateNotice, type ExtensionInfo, type LateNoticeInfo, type RegMode } from "./registration";
 
 export const CLOSED_MESSAGE = "EL REGISTRO DE ASISTENCIA SE ENCUENTRA CERRADO.";
 
@@ -16,6 +17,7 @@ export interface AttendanceRecord {
   operationalDate: string;
   confirmedAt: string; // ISO
   shiftCode: string;
+  via: RegMode;
 }
 
 export interface AttendanceView {
@@ -23,9 +25,17 @@ export interface AttendanceView {
   serverTime: string;
   localDate: string;
   localTime: string;
-  shift: { code: string; name: string; openTime: string; closeTime: string; lastAllowed: string };
+  shift: {
+    code: string; name: string; openTime: string; closeTime: string; lastAllowed: string;
+    extensionClose: string; lateLastAllowed: string;
+  };
   operationalDate: string;
-  windowState: WindowState;
+  windowState: WindowState; // OPEN también cuando hay extensión o aviso de retardo vigente
+  baseWindowState: WindowState; // ventana normal del turno
+  registration: { mode: RegMode | null; lastAllowed: string | null };
+  extension: ExtensionInfo | null;
+  lateNotice: LateNoticeInfo | null;
+  canNotifyLate: boolean;
   openShiftNow: string | null;
   existing: AttendanceRecord | null;
   nextChange: NextChange | null;
@@ -33,14 +43,14 @@ export interface AttendanceView {
 }
 
 async function findRecord(employeeId: number, shiftId: number, date: string): Promise<AttendanceRecord | null> {
-  const row = await queryOne<{ id: number; operational_date: string; confirmed_at: Date; code: string }>(
-    `SELECT a.id, a.operational_date, a.confirmed_at, s.code
+  const row = await queryOne<{ id: number; operational_date: string; confirmed_at: Date; code: string; via: RegMode }>(
+    `SELECT a.id, a.operational_date, a.confirmed_at, s.code, a.via
      FROM attendance a JOIN shifts s ON s.id = a.shift_id
      WHERE a.employee_id = $1 AND a.shift_id = $2 AND a.operational_date = $3`,
     [employeeId, shiftId, date],
   );
   return row
-    ? { id: row.id, operationalDate: row.operational_date, confirmedAt: row.confirmed_at.toISOString(), shiftCode: row.code }
+    ? { id: row.id, operationalDate: row.operational_date, confirmedAt: row.confirmed_at.toISOString(), shiftCode: row.code, via: row.via }
     : null;
 }
 
@@ -51,6 +61,8 @@ function shiftInfo(shift: Shift) {
     openTime: shift.openTime,
     closeTime: shift.closeTime,
     lastAllowed: lastAllowedSecond(shift.closeTime),
+    extensionClose: shift.extensionClose,
+    lateLastAllowed: lastAllowedSecond(shift.lateLimit),
   };
 }
 
@@ -61,7 +73,9 @@ export async function getAttendanceView(employee: SessionEmployee, now: Date): P
   const shiftId = await getEffectiveShiftId(employee.id, local.date);
   const shift = shifts.find((s) => s.id === shiftId);
   if (!shift) throw new AppError(500, "SHIFT_NOT_FOUND", "Turno no configurado.");
-  const state = windowState(now, shift, local.date);
+  const extension = await getExtension(employee.id, local.date, shift.id);
+  const lateNotice = await getLateNotice(employee.id, local.date, shift.id);
+  const reg = evaluateRegistration(now, shift, local.date, { extensionClose: extension?.closeTime, hasLateNotice: !!lateNotice });
 
   let existing = await findRecord(employee.id, shift.id, local.date);
   // Madrugada (antes de que abra el turno de día): mostrar el registro de la noche anterior.
@@ -78,7 +92,12 @@ export async function getAttendanceView(employee: SessionEmployee, now: Date): P
     localTime: local.time,
     shift: shiftInfo(shift),
     operationalDate: existing?.operationalDate ?? local.date,
-    windowState: state,
+    windowState: reg.open ? "OPEN" : reg.state,
+    baseWindowState: reg.state,
+    registration: { mode: reg.mode, lastAllowed: reg.lastAllowed },
+    extension,
+    lateNotice,
+    canNotifyLate: !existing && !lateNotice && reg.state !== "CLOSED",
     openShiftNow: findOpenShift(now, shifts)?.shift.code ?? null,
     existing,
     nextChange: await getNextChange(employee.id, local.date),
@@ -105,9 +124,12 @@ export async function confirmAttendance(employeeId: number, meta: RequestMeta): 
   const local = getLocalParts(meta.now);
   const shiftId = await getEffectiveShiftId(emp.id, local.date);
   const shift = shifts.find((s) => s.id === shiftId)!;
-  const state = windowState(meta.now, shift, local.date);
+  const extension = await getExtension(emp.id, local.date, shift.id);
+  const lateNotice = await getLateNotice(emp.id, local.date, shift.id);
+  const reg = evaluateRegistration(meta.now, shift, local.date, { extensionClose: extension?.closeTime, hasLateNotice: !!lateNotice });
+  const state = reg.state;
 
-  if (state !== "OPEN") {
+  if (!reg.open) {
     await logAudit({
       actorType: "EMPLOYEE", actorId: emp.id, actorLabel: emp.full_name, action: "ATTENDANCE_REJECTED_CLOSED",
       entity: "employee", entityId: emp.id, details: { localTime: local.time, shift: shift.code, state }, ip: meta.ip,
@@ -118,11 +140,11 @@ export async function confirmAttendance(employeeId: number, meta: RequestMeta): 
   }
 
   const inserted = await queryOne<{ id: number; confirmed_at: Date; operational_date: string }>(
-    `INSERT INTO attendance (employee_id, shift_id, department_id, role, operational_date, confirmed_at, ip, user_agent, subarea_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO attendance (employee_id, shift_id, department_id, role, operational_date, confirmed_at, ip, user_agent, subarea_id, via)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT ON CONSTRAINT attendance_unique_per_day DO NOTHING
      RETURNING id, confirmed_at, operational_date`,
-    [emp.id, shift.id, emp.department_id, emp.role, local.date, meta.now, meta.ip, meta.userAgent.slice(0, 300), emp.subarea_id],
+    [emp.id, shift.id, emp.department_id, emp.role, local.date, meta.now, meta.ip, meta.userAgent.slice(0, 300), emp.subarea_id, reg.mode],
   );
 
   if (!inserted) {
@@ -137,7 +159,7 @@ export async function confirmAttendance(employeeId: number, meta: RequestMeta): 
   await logAudit({
     actorType: "EMPLOYEE", actorId: emp.id, actorLabel: emp.full_name, action: "ATTENDANCE_CONFIRMED",
     entity: "attendance", entityId: inserted.id,
-    details: { operationalDate: inserted.operational_date, shift: shift.code, localTime: local.time },
+    details: { operationalDate: inserted.operational_date, shift: shift.code, localTime: local.time, via: reg.mode },
     ip: meta.ip,
   });
 
@@ -146,6 +168,7 @@ export async function confirmAttendance(employeeId: number, meta: RequestMeta): 
     operationalDate: inserted.operational_date,
     confirmedAt: inserted.confirmed_at.toISOString(),
     shiftCode: shift.code,
+    via: reg.mode!,
     employeeName: emp.full_name,
     departmentName: emp.department_name,
     shiftName: shift.name,

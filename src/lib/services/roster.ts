@@ -1,9 +1,9 @@
 import { query } from "../db";
-import { getLocalParts, windowState } from "../time";
+import { getLocalParts, timeToSeconds, windowState } from "../time";
 import { getDepartments, getShifts, getSubareas, type Department, type Shift, type Subarea } from "./catalog";
 
 export const STATUSES = [
-  "CONFIRMADO", "PENDIENTE", "FALTA", "VACACIONES", "INCAPACIDAD", "PSG", "BAJA",
+  "CONFIRMADO", "PENDIENTE", "RETARDO", "FALTA", "VACACIONES", "INCAPACIDAD", "PSG", "BAJA",
 ] as const;
 export type AttendanceStatus = (typeof STATUSES)[number];
 
@@ -13,6 +13,7 @@ export type IncidentType = (typeof INCIDENT_TYPES)[number];
 export const STATUS_LABELS: Record<AttendanceStatus, string> = {
   CONFIRMADO: "Confirmado",
   PENDIENTE: "Pendiente",
+  RETARDO: "Avisó retardo",
   FALTA: "Falta",
   VACACIONES: "Vacaciones",
   INCAPACIDAD: "Incapacidad",
@@ -48,6 +49,13 @@ export interface RosterRow {
   incidentBy: string | null;
   incidentAt: string | null;
   observations: string;
+  via: "NORMAL" | "EXTENSION" | "LATE_NOTICE" | null; // cómo registró
+  late: boolean; // registró después del cierre normal (extensión o aviso de retardo)
+  lateEta: string | null; // hora estimada del aviso "Llegaré tarde"
+  lateReason: string | null;
+  extensionUntil: string | null; // extensión vigente/otorgada (hora de cierre)
+  extensionBy: string | null;
+  canExtend: boolean; // se le puede abrir el registro hasta las 7:30 en este momento
 }
 
 interface RawRow {
@@ -67,6 +75,11 @@ interface RawRow {
   inc_reason: string | null;
   inc_at: Date | null;
   inc_by: string | null;
+  via: RosterRow["via"];
+  late_eta: string | null;
+  late_reason: string | null;
+  ext_close: string | null;
+  ext_by: string | null;
 }
 
 export interface RosterFilter {
@@ -105,7 +118,8 @@ export async function getRoster(filter: RosterFilter, now: Date, catalog?: Catal
             CASE WHEN a.id IS NOT NULL THEN a.subarea_id ELSE e.subarea_id END AS subarea_id,
             a.id AS att_id, a.confirmed_at,
             i.id AS inc_id, i.type AS inc_type, i.reason AS inc_reason, i.created_at AS inc_at,
-            u.display_name AS inc_by
+            u.display_name AS inc_by, a.via,
+            ln.eta AS late_eta, ln.reason AS late_reason, ex.close_time AS ext_close, ex.granted_by_label AS ext_by
      FROM base b
      JOIN employees e ON e.id = b.id
      LEFT JOIN LATERAL (
@@ -116,14 +130,17 @@ export async function getRoster(filter: RosterFilter, now: Date, catalog?: Catal
        SELECT * FROM incidents i WHERE i.employee_id = e.id AND i.operational_date = $1 AND i.revoked_at IS NULL
        ORDER BY i.created_at DESC LIMIT 1
      ) i ON TRUE
-     LEFT JOIN users u ON u.id = i.created_by`,
+     LEFT JOIN users u ON u.id = i.created_by
+     LEFT JOIN late_notices ln ON ln.employee_id = e.id AND ln.operational_date = $1
+     LEFT JOIN attendance_extensions ex ON ex.employee_id = e.id AND ex.operational_date = $1`,
     [filter.date],
   );
 
   const shiftById = new Map(shifts.map((s) => [s.id, s]));
   const deptById = new Map(departments.map((d) => [d.id, d]));
   const subById = new Map(subareas.map((x) => [x.id, x]));
-  const today = getLocalParts(now).date;
+  const local = getLocalParts(now);
+  const today = local.date;
 
   const result: RosterRow[] = rows.map((r) => {
     const shift = shiftById.get(r.shift_id)!;
@@ -133,9 +150,15 @@ export async function getRoster(filter: RosterFilter, now: Date, catalog?: Catal
     let automatic = false;
     let observations = "";
 
+    const lateNote = r.late_eta ? `Avisó retardo (llega ~${r.late_eta.slice(0, 5)}): ${r.late_reason}` : "";
+    const extNote = r.ext_close ? `Extensión hasta ${r.ext_close.slice(0, 5)} (${r.ext_by})` : "";
+
     if (r.att_id) {
       status = "CONFIRMADO";
-      if (r.inc_id) observations = `Tenía incidencia ${r.inc_type} registrada: ${r.inc_reason}`;
+      observations = [
+        r.via === "LATE_NOTICE" ? `Llegó tarde. ${lateNote}` : r.via === "EXTENSION" ? `Registró con ${extNote.toLowerCase()}` : "",
+        r.inc_id ? `Tenía incidencia ${r.inc_type} registrada: ${r.inc_reason}` : "",
+      ].filter(Boolean).join(" · ");
     } else if (r.inc_type) {
       status = r.inc_type;
       observations = r.inc_reason ?? "";
@@ -145,12 +168,20 @@ export async function getRoster(filter: RosterFilter, now: Date, catalog?: Catal
       observations = `Baja desde ${r.terminated_at}`;
     } else {
       const state = filter.date > today ? "BEFORE" : windowState(now, shift, filter.date);
-      if (state === "CLOSED") {
+      const isToday = filter.date === today;
+      if (state !== "CLOSED") {
+        status = r.late_eta ? "RETARDO" : "PENDIENTE";
+        observations = lateNote || extNote;
+      } else if (r.late_eta && isToday && local.seconds < timeToSeconds(shift.lateLimit)) {
+        status = "RETARDO"; // avisó y aún puede llegar a registrar
+        observations = lateNote;
+      } else if (r.ext_close && isToday && local.seconds < timeToSeconds(r.ext_close)) {
+        status = "PENDIENTE"; // tiene extensión vigente
+        observations = extNote;
+      } else {
         status = "FALTA";
         automatic = true;
-        observations = "Sin registro de asistencia";
-      } else {
-        status = "PENDIENTE";
+        observations = [r.late_eta ? `${lateNote}. No registró` : "Sin registro de asistencia", extNote].filter(Boolean).join(" · ");
       }
     }
 
@@ -176,6 +207,15 @@ export async function getRoster(filter: RosterFilter, now: Date, catalog?: Catal
       incidentBy: r.inc_by,
       incidentAt: r.inc_at ? r.inc_at.toISOString() : null,
       observations,
+      via: r.via,
+      late: r.via === "EXTENSION" || r.via === "LATE_NOTICE",
+      lateEta: r.late_eta,
+      lateReason: r.late_reason,
+      extensionUntil: r.ext_close,
+      extensionBy: r.ext_by,
+      canExtend: !r.att_id && !r.inc_id && r.active && !r.ext_close && (status === "FALTA" || status === "PENDIENTE")
+        && filter.date === today && local.seconds >= timeToSeconds(shift.openTime)
+        && local.seconds < timeToSeconds(shift.extensionClose),
     };
   });
 
@@ -212,6 +252,8 @@ export interface RosterStats {
   total: number;
   confirmed: number;
   pending: number;
+  retardo: number; // avisaron retardo y aún no llegan
+  lateArrivals: number; // registraron tarde (extensión o aviso)
   falta: number;
   vacaciones: number;
   incapacidad: number;
@@ -243,6 +285,8 @@ export function computeStats(rows: RosterRow[]): RosterStats {
     total: active.length,
     confirmed,
     pending: count("PENDIENTE"),
+    retardo: count("RETARDO"),
+    lateArrivals: rows.filter((r) => r.status === "CONFIRMADO" && r.late).length,
     falta: count("FALTA"),
     vacaciones: count("VACACIONES"),
     incapacidad: count("INCAPACIDAD"),

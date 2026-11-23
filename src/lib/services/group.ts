@@ -28,6 +28,11 @@ export interface LeaderAttendanceRow {
   status: AttendanceStatus;
   confirmedAt: string | null;
   photoVersion: string | null;
+  late: boolean;
+  lateEta: string | null;
+  lateReason: string | null; // el líder sí ve el motivo del aviso de retardo
+  extensionUntil: string | null;
+  canExtend: boolean;
 }
 
 export interface MyGroup {
@@ -38,6 +43,7 @@ export interface MyGroup {
     date: string;
     shiftCode: string;
     shiftName: string;
+    extensionClose: string;
     confirmed: number;
     total: number;
     rows: LeaderAttendanceRow[];
@@ -87,11 +93,17 @@ export async function getMyGroup(me: SessionEmployee, now: Date, shiftCodeParam?
         status: r.status,
         confirmedAt: r.confirmedAt,
         photoVersion: photoBy.get(r.employeeId) ?? null,
+        late: r.late,
+        lateEta: r.lateEta,
+        lateReason: r.lateReason,
+        extensionUntil: r.extensionUntil,
+        canExtend: r.canExtend && r.employeeId !== me.id,
       }));
     leaderView = {
       date,
       shiftCode: shift.code,
       shiftName: shift.name,
+      extensionClose: shift.extensionClose,
       confirmed: rows.filter((r) => r.status === "CONFIRMADO").length,
       total: rows.filter((r) => r.status !== "BAJA").length,
       rows,

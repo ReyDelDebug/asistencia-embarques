@@ -74,6 +74,7 @@ export function CardHeader({ title, subtitle, actions }: { title: string; subtit
 export const STATUS_STYLES: Record<string, string> = {
   CONFIRMADO: "bg-emerald-50 text-emerald-800 ring-emerald-600/20",
   PENDIENTE: "bg-amber-50 text-amber-800 ring-amber-600/20",
+  RETARDO: "bg-orange-50 text-orange-800 ring-orange-600/30",
   FALTA: "bg-red-50 text-red-800 ring-red-600/20",
   VACACIONES: "bg-sky-50 text-sky-800 ring-sky-600/20",
   INCAPACIDAD: "bg-violet-50 text-violet-800 ring-violet-600/20",
@@ -84,6 +85,7 @@ export const STATUS_STYLES: Record<string, string> = {
 export const STATUS_LABELS: Record<string, string> = {
   CONFIRMADO: "Confirmado",
   PENDIENTE: "Pendiente",
+  RETARDO: "Avisó retardo",
   FALTA: "Falta",
   VACACIONES: "Vacaciones",
   INCAPACIDAD: "Incapacidad",
