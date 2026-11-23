@@ -268,6 +268,34 @@ export async function setupEmployeePin(
   return { ...session, employee: toSessionEmployee(emp) };
 }
 
+/** El trabajador cambia su PIN desde su perfil (requiere su PIN actual). */
+export async function changeEmployeePin(
+  employee: SessionEmployee,
+  input: { currentPin: string; newPin: string; newPinConfirm: string },
+  meta: RequestMeta,
+): Promise<void> {
+  await assertIpNotThrottled("EMPLOYEE", meta);
+  const row = await queryOne<{ pin_hash: string | null }>(`SELECT pin_hash FROM employees WHERE id = $1`, [employee.id]);
+  if (!row?.pin_hash || !(await verifySecret(String(input.currentPin ?? "").trim(), row.pin_hash))) {
+    await recordAttempt("EMPLOYEE", meta, employee.employeeNumber, false);
+    await logAudit({
+      actorType: "EMPLOYEE", actorId: employee.id, actorLabel: employee.fullName, action: "EMPLOYEE_PIN_CHANGE_FAILED",
+      entity: "employee", entityId: employee.id, ip: meta.ip,
+    });
+    throw new AppError(400, "BAD_CURRENT_PIN", "Tu PIN actual no es correcto.");
+  }
+  const newPin = String(input.newPin ?? "").trim();
+  validateNewPin(newPin, String(input.newPinConfirm ?? "").trim());
+  if (newPin === String(input.currentPin).trim()) {
+    throw new AppError(400, "SAME_PIN", "El PIN nuevo debe ser diferente al actual.");
+  }
+  await query(`UPDATE employees SET pin_hash = $2, updated_at = now() WHERE id = $1`, [employee.id, await hashSecret(newPin)]);
+  await logAudit({
+    actorType: "EMPLOYEE", actorId: employee.id, actorLabel: employee.fullName, action: "EMPLOYEE_PIN_CHANGED",
+    entity: "employee", entityId: employee.id, ip: meta.ip,
+  });
+}
+
 export async function getEmployeeFromToken(token: string | undefined, now = new Date()): Promise<SessionEmployee | null> {
   if (!token) return null;
   const row = await queryOne<EmployeeRow>(

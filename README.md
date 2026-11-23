@@ -2,7 +2,7 @@
 
 Aplicación web para que cada empleado confirme su asistencia desde el celular con **número de empleado + PIN**. El supervisor ve un panel en tiempo real, genera automáticamente el **reporte para WhatsApp** y descarga **Excel**.
 
-- **Flujo:** el supervisor registra a cada trabajador por área y arma el rol de turno → el trabajador entra con su número, crea su PIN y confirma asistencia en su turno → el sistema marca faltas a las 07:40 / 19:40 → reporte de WhatsApp y Excel automáticos.
+- **Flujo:** el supervisor registra a cada trabajador por área y arma el rol de turno → el trabajador entra con su número, crea su PIN y confirma asistencia en su turno → el sistema marca faltas a las 07:20 / 19:20 → reporte de WhatsApp y Excel automáticos.
 - **Stack:** Next.js 16 (App Router) + TypeScript · Tailwind CSS 4 · PostgreSQL (Supabase) · `pg` · ExcelJS
 - **Hora oficial:** la del **servidor**, convertida a `America/Mexico_City`. Nunca se usa la hora del celular.
 
@@ -14,6 +14,9 @@ Aplicación web para que cada empleado confirme su asistencia desde el celular c
 - Escribe su **número de empleado**. La **primera vez crea su propio PIN** (4–6 dígitos; se rechazan PIN fáciles como 1111 o 1234). Después entra con número + PIN. El PIN se guarda con hash scrypt.
 - Ve **su turno asignado según el rol** (Día/Noche), el próximo cambio programado, su área y el horario.
 - Puede **solicitar vacaciones o PSG** (rango de fechas) y ver si fueron aprobadas.
+- **Mi perfil:** foto de perfil (se recorta y comprime en el celular; la ven solo sus compañeros de área y los supervisores) y **restablecer su PIN** (pide el PIN actual; si lo olvidó, el supervisor lo restablece).
+- **Mi grupo:** ve únicamente a los compañeros de **su área** (Central —incluida PT—, RC o Lavadoras) con su foto, puesto y turno.
+- **Líderes:** además ven **quién ha registrado asistencia hoy en su área** (por defecto su turno; pueden cambiar a Día/Noche), sin motivos ni datos administrativos.
 - Botón **CONFIRMAR MI ASISTENCIA** → pantalla **¡ASISTENCIA REGISTRADA!** con la hora exacta.
 - Si ya registró, ve su registro. Una segunda confirmación queda bloqueada en el servidor y en la base de datos.
 - Fuera de horario: **EL REGISTRO DE ASISTENCIA SE ENCUENTRA CERRADO.**
@@ -22,10 +25,10 @@ Aplicación web para que cada empleado confirme su asistencia desde el celular c
 
 | Turno | Abre | Último segundo válido | Bloqueado desde |
 |---|---|---|---|
-| Día | 05:00:00 | 07:39:59 | 07:40:00 |
-| Noche | 17:00:00 | 19:39:59 | 19:40:00 |
+| Día | 05:00:00 | 07:19:59 | 07:20:00 |
+| Noche | 17:00:00 | 19:19:59 | 19:20:00 |
 
-Cada trabajador solo puede registrar en la ventana del turno que le asignó el supervisor en el **rol de turno**. Quien no registra antes de las 07:40 (o 19:40 en noche) aparece como **Falta** en el panel, el reporte y el Excel.
+Cada trabajador solo puede registrar en la ventana del turno que le asignó el supervisor en el **rol de turno**. Quien no registra antes de las 07:20 (o 19:20 en noche) aparece como **Falta** en el panel, el reporte y el Excel.
 
 **Áreas:** Central (con subárea **PT**), RC y Lavadoras. Central lleva dos líderes (uno de Central y uno de PT); RC y Lavadoras, uno cada una. Los líderes y quiénes pertenecen a PT se asignan desde **Empleados**.
 
@@ -127,6 +130,18 @@ npm run db:setup      # aplica migraciones + carga inicial
 
 ---
 
+### Actualizar una instalación existente
+
+Cuando recibas una versión nueva del proyecto:
+
+```bash
+npm install
+npm run db:setup     # aplica solo las migraciones nuevas; no borra datos
+git add .
+git commit -m "Actualización"
+git push             # Vercel publica automáticamente
+```
+
 ## 5. Compartir el enlace en WhatsApp
 
 Comparte en el grupo **solo** el enlace de empleados (el de `/admin` es solo para supervisores):
@@ -136,8 +151,8 @@ Comparte en el grupo **solo** el enlace de empleados (el de `/admin` es solo par
 Confirma tu asistencia aquí:
 https://TU-APP.vercel.app
 
-🕔 Día: 5:00 a 7:39 a. m.
-🕔 Noche: 5:00 a 7:39 p. m.
+🕔 Día: de 5:00 a. m. a antes de las 7:20 a. m.
+🕔 Noche: de 5:00 p. m. a antes de las 7:20 p. m.
 Ingresa con tu número de empleado. La primera vez crea tu PIN personal (no lo compartas).
 Ahí mismo ves tu turno asignado y puedes pedir vacaciones o PSG.
 ```
@@ -161,8 +176,8 @@ Fija el mensaje en el grupo. En el celular pueden usar "Agregar a pantalla de in
 ## 7. Pruebas
 
 ```bash
-npm test          # 67 pruebas: horarios, autenticación, reglas, reporte, Excel, auditoría (PostgreSQL real)
-npm run test:e2e  # 13 pruebas: servidor real + HTTP + Chrome emulando iPhone y Android
+npm test          # 73 pruebas: horarios, autenticación, reglas, reporte, Excel, auditoría (PostgreSQL real)
+npm run test:e2e  # 16 pruebas: servidor real + HTTP + Chrome emulando iPhone y Android
 ```
 
 Las pruebas usan una base **separada**, que se borra en cada corrida (`TEST_DATABASE_URL`, por defecto `postgres://postgres@localhost:5432/asistencia_test`). Por seguridad, solo corren si el nombre de la base contiene `test`.
@@ -185,4 +200,4 @@ tests/                       Pruebas de integración y e2e
 
 ## 9. Tablas
 
-`shifts`, `departments`, `subareas`, `employees`, `shift_assignments` (rol de turno), `leave_requests` (vacaciones/PSG), `users`, `attendance` (única por empleado + fecha operativa + turno, inmutable), `incidents` (una activa por empleado/fecha/turno, nunca se borran), `operational_reports`, `operational_extras`, `sessions`, `login_attempts`, `audit_logs` (inmutable), `schema_migrations`.
+`shifts`, `departments`, `subareas`, `employees`, `employee_photos`, `shift_assignments` (rol de turno), `leave_requests` (vacaciones/PSG), `users`, `attendance` (única por empleado + fecha operativa + turno, inmutable), `incidents` (una activa por empleado/fecha/turno, nunca se borran), `operational_reports`, `operational_extras`, `sessions`, `login_attempts`, `audit_logs` (inmutable), `schema_migrations`.

@@ -6,8 +6,8 @@ import {
 import { isWeakPin, generatePin } from "../src/lib/crypto";
 import { mx } from "./helpers";
 
-const DIA: ShiftWindowConfig = { id: 1, code: "DIA", name: "Día", openTime: "05:00:00", closeTime: "07:40:00" };
-const NOCHE: ShiftWindowConfig = { id: 2, code: "NOCHE", name: "Noche", openTime: "17:00:00", closeTime: "19:40:00" };
+const DIA: ShiftWindowConfig = { id: 1, code: "DIA", name: "Día", openTime: "05:00:00", closeTime: "07:20:00" };
+const NOCHE: ShiftWindowConfig = { id: 2, code: "NOCHE", name: "Noche", openTime: "17:00:00", closeTime: "19:20:00" };
 
 describe("Horarios (hora del servidor en America/Mexico_City)", () => {
   it("convierte UTC a hora local de Ciudad de México", () => {
@@ -18,8 +18,8 @@ describe("Horarios (hora del servidor en America/Mexico_City)", () => {
   it.each([
     ["2026-11-23T04:59:59", "BEFORE"],
     ["2026-11-23T05:00:00", "OPEN"],
-    ["2026-11-23T07:39:59", "OPEN"],
-    ["2026-11-23T07:40:00", "CLOSED"],
+    ["2026-11-23T07:19:59", "OPEN"],
+    ["2026-11-23T07:20:00", "CLOSED"],
   ])("turno de día a las %s -> %s", (t, expected) => {
     expect(windowState(mx(t), DIA, "2026-11-23")).toBe(expected);
   });
@@ -27,8 +27,8 @@ describe("Horarios (hora del servidor en America/Mexico_City)", () => {
   it.each([
     ["2026-11-23T16:59:59", "BEFORE"],
     ["2026-11-23T17:00:00", "OPEN"],
-    ["2026-11-23T19:39:59", "OPEN"],
-    ["2026-11-23T19:40:00", "CLOSED"],
+    ["2026-11-23T19:19:59", "OPEN"],
+    ["2026-11-23T19:20:00", "CLOSED"],
   ])("turno de noche a las %s -> %s", (t, expected) => {
     expect(windowState(mx(t), NOCHE, "2026-11-23")).toBe(expected);
   });
@@ -46,7 +46,7 @@ describe("Horarios (hora del servidor en America/Mexico_City)", () => {
 
   it("formatos", () => {
     expect(formatDateReport("2026-11-23")).toBe("23 DE NOVIEMBRE");
-    expect(lastAllowedSecond("07:40:00")).toBe("07:39:59");
+    expect(lastAllowedSecond("07:20:00")).toBe("07:19:59");
   });
 
   it("PIN aleatorio nunca es trivial", () => {

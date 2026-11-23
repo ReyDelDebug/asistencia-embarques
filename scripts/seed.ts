@@ -90,8 +90,8 @@ export async function seed(opts: { writeFiles?: boolean; log?: boolean } = {}): 
   await withTransaction(async (c) => {
     await c.query(
       `INSERT INTO shifts (code, name, open_time, close_time, report_title, sort_order) VALUES
-         ('DIA',   'Día',   '05:00:00', '07:40:00', 'BUENOS DÍAS ASISTENCIA (HG) EMBARQUES', 1),
-         ('NOCHE', 'Noche', '17:00:00', '19:40:00', 'BUENAS NOCHES ASISTENCIA (HG) EMBARQUES', 2)
+         ('DIA',   'Día',   '05:00:00', '07:20:00', 'BUENOS DÍAS ASISTENCIA (HG) EMBARQUES', 1),
+         ('NOCHE', 'Noche', '17:00:00', '19:20:00', 'BUENAS NOCHES ASISTENCIA (HG) EMBARQUES', 2)
        ON CONFLICT (code) DO NOTHING`,
     );
     await c.query(

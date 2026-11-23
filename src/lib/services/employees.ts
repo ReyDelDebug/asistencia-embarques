@@ -26,6 +26,7 @@ export interface EmployeeListRow {
   has_pin: boolean;
   locked_until: Date | null;
   panel_username: string | null;
+  photo_version: string | null;
 }
 
 export async function listEmployees(): Promise<EmployeeListRow[]> {
@@ -37,13 +38,15 @@ export async function listEmployees(): Promise<EmployeeListRow[]> {
             cs.code AS current_shift_code, cs.name AS current_shift_name, e.active, e.terminated_at,
             (e.pin_hash IS NOT NULL) AS has_pin,
             CASE WHEN e.locked_until > now() THEN e.locked_until END AS locked_until,
-            u.username AS panel_username
+            u.username AS panel_username,
+            (extract(epoch FROM ph.updated_at) * 1000)::bigint::text AS photo_version
      FROM employees e
      JOIN shifts s ON s.id = e.shift_id
      JOIN shifts cs ON cs.id = employee_shift_on(e.id, $1)
      LEFT JOIN departments d ON d.id = e.department_id
      LEFT JOIN subareas sa ON sa.id = e.subarea_id
      LEFT JOIN users u ON u.employee_id = e.id
+     LEFT JOIN employee_photos ph ON ph.employee_id = e.id
      ORDER BY e.active DESC, d.sort_order NULLS FIRST, sa.sort_order NULLS FIRST,
               CASE e.role WHEN 'SUPERVISOR' THEN 0 WHEN 'LEADER' THEN 1 ELSE 2 END, e.full_name`,
     [today],

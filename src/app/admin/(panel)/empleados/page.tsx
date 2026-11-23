@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  Alert, api, Badge, Button, Card, CardHeader, dateShort, dateTimeMx, Field, inputClass, Modal, ROLE_LABELS, STATUS_LABELS, timeMx,
+  Alert, api, Avatar, Badge, Button, Card, CardHeader, dateShort, dateTimeMx, Field, inputClass, Modal, ROLE_LABELS, STATUS_LABELS, timeMx,
 } from "@/components/ui";
 
 interface Emp {
   id: number; employee_number: string; full_name: string; role: string; department_id: number | null;
   department_name: string | null; subarea_id: number | null; subarea_name: string | null; shift_id: number; shift_code: string;
   shift_name: string; current_shift_code: string; current_shift_name: string; active: boolean;
-  terminated_at: string | null; has_pin: boolean; locked_until: string | null; panel_username: string | null;
+  terminated_at: string | null; has_pin: boolean; locked_until: string | null; panel_username: string | null; photo_version: string | null;
 }
 interface Catalog {
   shifts: { id: number; code: string; name: string }[];
@@ -118,6 +118,16 @@ export default function EmployeesPage() {
     }
   }
 
+  async function removePhoto(emp: Emp) {
+    if (!confirm(`¿Quitar la foto de perfil de ${emp.full_name}?`)) return;
+    try {
+      await api(`/api/admin/employees/${emp.id}/photo`, { method: "DELETE" });
+      load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   async function openHistory(emp: Emp) {
     setHistory({ emp, data: null });
     const data = await api<History>(`/api/admin/employees/${emp.id}/history`);
@@ -166,7 +176,7 @@ export default function EmployeesPage() {
               {rows.map((e) => (
                 <tr key={e.id} className={e.active ? "" : "bg-slate-50 text-slate-500"}>
                   <td className="px-4 py-2.5 font-mono">{e.employee_number}</td>
-                  <td className="px-4 py-2.5 font-semibold">{e.full_name}{e.panel_username && <span className="ml-2 text-xs font-normal text-slate-500">(panel: {e.panel_username})</span>}</td>
+                  <td className="px-4 py-2.5 font-semibold"><span className="flex items-center gap-2"><Avatar employeeId={e.id} name={e.full_name} version={e.photo_version} size={30} /><span>{e.full_name}{e.panel_username && <span className="ml-2 text-xs font-normal text-slate-500">(panel: {e.panel_username})</span>}</span></span></td>
                   <td className="px-4 py-2.5">{ROLE_LABELS[e.role]}</td>
                   <td className="px-4 py-2.5">{e.department_name ? `${e.department_name}${e.subarea_name ? ` · ${e.subarea_name}` : ""}` : "Supervisión"}</td>
                   <td className="px-4 py-2.5">{e.current_shift_name}</td>
@@ -182,6 +192,7 @@ export default function EmployeesPage() {
                         onClick={() => { setFormError(null); setForm({ id: e.id, employeeNumber: e.employee_number, fullName: e.full_name, role: e.role, departmentId: String(e.department_id ?? ""), subareaId: String(e.subarea_id ?? ""), shiftId: String(e.shift_id) }); }}>Editar</Button>}
                       {e.active && <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setConfirmReset(e)}>Restablecer PIN</Button>}
                       <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => openHistory(e)}>Historial</Button>
+                      {e.photo_version && <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => removePhoto(e)}>Quitar foto</Button>}
                       {e.active
                         ? <Button variant="ghost" className="px-2 py-1 text-xs text-red-700" onClick={() => { setReason(""); setTerminate({ emp: e, reactivate: false }); }}>Dar de baja</Button>
                         : <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => { setReason(""); setTerminate({ emp: e, reactivate: true }); }}>Reactivar</Button>}

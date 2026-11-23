@@ -7,7 +7,7 @@
  * BASE DE PRUEBAS la ventana de un turno para que incluya la hora actual.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import ExcelJS from "exceljs";
 import puppeteer, { type Browser } from "puppeteer-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -245,6 +245,49 @@ describe("API por HTTP", () => {
     await adm.req("/api/admin/rol", { method: "PUT", json: { effectiveFrom: rol.today, items: [{ employeeId: enrique.employeeId, shiftCode: "NOCHE" }] } });
   });
 
+  it("turno de NOCHE por HTTP: el de noche registra, el de día no", async () => {
+    await openWindowNow("NOCHE");
+    const night = new Client();
+    await night.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "2003", pin: pinOf(S, "Gregorio Meraz") } });
+    const v = await (await night.req("/api/attendance")).json();
+    expect(v).toMatchObject({ windowState: "OPEN", shift: { code: "NOCHE" } });
+    const r = await night.req("/api/attendance", { method: "POST" });
+    expect(r.status).toBe(201);
+    expect((await r.json()).record.shiftCode).toBe("NOCHE");
+
+    const day = new Client();
+    await day.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "1004", pin: pinOf(S, "Julio César") } });
+    expect((await day.req("/api/attendance", { method: "POST" })).status).toBe(403);
+  });
+
+  it("foto de perfil y Mi grupo por HTTP: cada área solo ve a la suya", async () => {
+    const central = new Client();
+    await central.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "1003", pin: pinOf(S, "Alexis Altamirano") } });
+    const jpeg = "data:image/jpeg;base64," + readFileSync("tests/e2e/fixtures/foto-prueba.jpg").toString("base64");
+    const up = await central.req("/api/me/photo", { method: "PUT", json: { image: jpeg } });
+    expect(up.status).toBe(200);
+    const me = await (await central.req("/api/attendance")).json();
+    const id = me.employee.id;
+
+    const mate = new Client();
+    await mate.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "1005", pin: pinOf(S, "Maximiliano") } });
+    const ok = await mate.req(`/api/photos/${id}`);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("content-type")).toBe("image/jpeg");
+
+    const rc = new Client();
+    await rc.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "1013", pin: pinOf(S, "Arturo Mata") } });
+    expect((await rc.req(`/api/photos/${id}`)).status).toBe(404);
+    expect((await new Client().req(`/api/photos/${id}`)).status).toBe(401);
+    const g = await (await rc.req("/api/me/group")).json();
+    expect(g.departmentName).toBe("RC");
+    expect(g.members.map((m: { fullName: string }) => m.fullName)).not.toContain("Alexis Altamirano");
+    expect(g.leaderView).toBeNull();
+
+    const pinChange = await central.req("/api/me/pin", { method: "POST", json: { currentPin: "000000", newPin: "702913", newPinConfirm: "702913" } });
+    expect(pinChange.status).toBe(400);
+  });
+
   it("encabezados de seguridad", async () => {
     const r = await fetch(`${BASE}/`);
     expect(r.headers.get("x-frame-options")).toBe("DENY");
@@ -320,6 +363,25 @@ describe("20. Funcionamiento desde celular (Chrome con emulación)", () => {
       expect(text).not.toContain("CONFIRMAR MI ASISTENCIA");
       await page.screenshot({ path: `${SHOTS}/${d.name}-3-exito.png` });
 
+      // Pestaña Mi perfil: subir foto (se recorta y comprime en el navegador)
+      const perfil = await page.waitForSelector("xpath/.//nav//button[contains(., 'Mi perfil')]");
+      await perfil!.tap();
+      await page.waitForFunction(() => document.body.innerText.includes("Restablecer mi PIN"));
+      const input = await page.$("input[type=file]");
+      await (input as unknown as { uploadFile: (p: string) => Promise<void> }).uploadFile("tests/e2e/fixtures/foto-prueba.jpg");
+      await page.waitForFunction(() => document.body.innerText.includes("Foto actualizada"));
+      await page.waitForSelector("img[src^='/api/photos/']");
+      await page.screenshot({ path: `${SHOTS}/${d.name}-4-perfil.png` });
+
+      // Pestaña Mi grupo
+      const grupo = await page.waitForSelector("xpath/.//nav//button[contains(., 'Mi grupo')]");
+      await grupo!.tap();
+      await page.waitForFunction(() => document.body.innerText.includes("Mi grupo ·"));
+      await page.screenshot({ path: `${SHOTS}/${d.name}-5-grupo.png`, fullPage: true });
+      const asis = await page.waitForSelector("xpath/.//nav//button[contains(., 'Asistencia')]");
+      await asis!.tap();
+      await page.waitForFunction(() => document.body.innerText.includes("¡ASISTENCIA REGISTRADA!"));
+
       // Sin desbordamiento horizontal
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       expect(overflow).toBeLessThanOrEqual(0);
@@ -330,6 +392,28 @@ describe("20. Funcionamiento desde celular (Chrome con emulación)", () => {
       await ctx.close();
     });
   }
+
+  it("líder ve en su celular quién registró asistencia en su área", async () => {
+    await openWindowNow("DIA");
+    const ctx = await browser.createBrowserContext();
+    const page = await ctx.newPage();
+    await page.setViewport(devices[0].viewport);
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle0" });
+    await page.type("#num", "1006");
+    await page.click("button[type=submit]");
+    await page.waitForSelector("#pin");
+    await page.type("#pin", pinOf(S, "Isaías Romero"));
+    await page.click("button[type=submit]");
+    await page.waitForFunction(() => document.body.innerText.includes("CONFIRMAR MI ASISTENCIA"));
+    const grupo = await page.waitForSelector("xpath/.//nav//button[contains(., 'Mi grupo')]");
+    await grupo!.tap();
+    await page.waitForFunction(() => document.body.innerText.includes("Asistencia de Central"));
+    const text = await page.evaluate(() => document.body.innerText);
+    expect(text).toContain("Jonathan Luna"); // registró en la prueba del iPhone
+    expect(text).not.toContain("Enrique Suárez"); // es de RC
+    await page.screenshot({ path: `${SHOTS}/lider-grupo.png`, fullPage: true });
+    await ctx.close();
+  });
 
   it("pantalla de registro cerrado en celular", async () => {
     await closeAllWindows();

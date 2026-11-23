@@ -212,3 +212,24 @@ export function dateLong(d: string): string {
     .format(new Date(Date.UTC(y, m - 1, day, 12)));
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
+
+/** Foto de perfil con respaldo de iniciales. */
+export function Avatar({
+  employeeId, name, version, size = 40, className,
+}: { employeeId: number; name: string; version: string | null | undefined; size?: number; className?: string }) {
+  const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  const style = { width: size, height: size, fontSize: Math.max(11, Math.round(size * 0.38)) };
+  if (version) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={`/api/photos/${employeeId}?v=${version}`} alt={name} style={style}
+        className={cx("shrink-0 rounded-full object-cover ring-1 ring-slate-200", className)} />
+    );
+  }
+  return (
+    <span style={style} aria-label={name}
+      className={cx("inline-flex shrink-0 items-center justify-center rounded-full bg-slate-200 font-semibold text-slate-600", className)}>
+      {initials}
+    </span>
+  );
+}

@@ -8,12 +8,14 @@ import { query, queryOne } from "../src/lib/db";
 import { verifySecret } from "../src/lib/crypto";
 import { confirmAttendance, getAttendanceView } from "../src/lib/services/attendance";
 import {
-  getEmployeeFromToken, getUserFromToken, identifyEmployee, loginEmployee, loginUser, setupEmployeePin, type SessionUser,
+  changeEmployeePin, getEmployeeFromToken, getUserFromToken, identifyEmployee, loginEmployee, loginUser, setupEmployeePin, type SessionUser,
 } from "../src/lib/services/auth";
 import { buildAttendanceWorkbook } from "../src/lib/services/excel";
 import { createEmployee, resetEmployeePin, terminateEmployee, updateEmployee } from "../src/lib/services/employees";
 import { cancelMyLeaveRequest, createLeaveRequest, decideLeaveRequest, listLeaveRequests } from "../src/lib/services/leave";
 import { getRol, mondayOf, saveRol } from "../src/lib/services/rol";
+import { decodeImage, deleteEmployeePhoto, getPhotoFor, setEmployeePhoto } from "../src/lib/services/photos";
+import { getMyGroup } from "../src/lib/services/group";
 import { revokeIncident, setIncident } from "../src/lib/services/incidents";
 import { buildReport, saveOperationalData } from "../src/lib/services/report";
 import { computeStats, getRoster } from "../src/lib/services/roster";
@@ -120,24 +122,24 @@ describe("3–9. Restricción de horarios", () => {
     expect(r.operationalDate).toBe(D1);
     expect(r.confirmedAt).toBe(mx(`${D1}T05:00:00`).toISOString());
   });
-  it("5. registro a las 07:39:59 -> aceptado", async () => {
-    const r = await confirmAt("Julio César", `${D1}T07:39:59`);
-    expect(r.confirmedAt).toBe(mx(`${D1}T07:39:59`).toISOString());
+  it("5. registro a las 07:19:59 -> aceptado", async () => {
+    const r = await confirmAt("Julio César", `${D1}T07:19:59`);
+    expect(r.confirmedAt).toBe(mx(`${D1}T07:19:59`).toISOString());
   });
-  it("6. registro a las 07:40:00 -> cerrado", async () => {
-    await expect(confirmAt("Maximiliano", `${D1}T07:40:00`)).rejects.toMatchObject({ status: 403, code: "REGISTRATION_CLOSED" });
+  it("6. registro a las 07:20:00 -> cerrado", async () => {
+    await expect(confirmAt("Maximiliano", `${D1}T07:20:00`)).rejects.toMatchObject({ status: 403, code: "REGISTRATION_CLOSED" });
   });
   it("7. noche a las 17:00:00 -> aceptado", async () => {
     const r = await confirmAt("Enrique González", `${D1}T17:00:00`);
     expect(r.shiftCode).toBe("NOCHE");
     expect(r.operationalDate).toBe(D1);
   });
-  it("8. noche a las 19:39:59 -> aceptado", async () => {
-    const r = await confirmAt("Javier Ángeles", `${D1}T19:39:59`);
-    expect(r.confirmedAt).toBe(mx(`${D1}T19:39:59`).toISOString());
+  it("8. noche a las 19:19:59 -> aceptado", async () => {
+    const r = await confirmAt("Javier Ángeles", `${D1}T19:19:59`);
+    expect(r.confirmedAt).toBe(mx(`${D1}T19:19:59`).toISOString());
   });
-  it("9. noche a las 19:40:00 -> cerrado", async () => {
-    await expect(confirmAt("Gregorio Meraz", `${D1}T19:40:00`)).rejects.toMatchObject({ status: 403, code: "REGISTRATION_CLOSED" });
+  it("9. noche a las 19:20:00 -> cerrado", async () => {
+    await expect(confirmAt("Gregorio Meraz", `${D1}T19:20:00`)).rejects.toMatchObject({ status: 403, code: "REGISTRATION_CLOSED" });
   });
 });
 
@@ -490,16 +492,16 @@ describe("Rol de turno (semanal, vigente hasta que se cambie)", () => {
   });
 });
 
-describe("Falta automática al cerrar el registro (07:40) y en el Excel", () => {
+describe("Falta automática al cerrar el registro (07:20) y en el Excel", () => {
   const D = "2026-12-02";
-  it("07:39:59 pendiente; 07:40:00 falta", async () => {
+  it("07:19:59 pendiente; 07:20:00 falta", async () => {
     const at = async (t: string) => (await getRoster({ date: D, shiftId: 1 }, mx(`${D}T${t}`))).find((r) => r.fullName === "Antonio Rosado")!.status;
-    expect(await at("07:39:59")).toBe("PENDIENTE");
-    expect(await at("07:40:00")).toBe("FALTA");
+    expect(await at("07:19:59")).toBe("PENDIENTE");
+    expect(await at("07:20:00")).toBe("FALTA");
   });
 
-  it("el Excel exporta como Falta a quien no registró antes de las 07:40", async () => {
-    const { buffer } = await buildAttendanceWorkbook({ from: D, to: D, shiftId: 1 }, mx(`${D}T07:40:00`));
+  it("el Excel exporta como Falta a quien no registró antes de las 07:20", async () => {
+    const { buffer } = await buildAttendanceWorkbook({ from: D, to: D, shiftId: 1 }, mx(`${D}T07:20:00`));
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buffer as unknown as ArrayBuffer);
     const ws = wb.getWorksheet("ASISTENCIA GENERAL")!;
@@ -598,5 +600,108 @@ describe("Subárea PT dentro de Central (dos líderes en Central)", () => {
     const e = await employeeByName("David Ponce");
     await expect(updateEmployee(e.id, { fullName: "David Ponce", role: "EMPLOYEE", departmentId: rc!.id, subareaId: pt!.id, shiftId: 1 }, admin, "1.1.1.1"))
       .rejects.toMatchObject({ code: "BAD_SUBAREA" });
+  });
+});
+
+describe("Turno de noche: registro desde la vista del empleado", () => {
+  it("un empleado de noche ve el registro ABIERTO de 17:00 a 19:19:59 y puede confirmar", async () => {
+    const e = await employeeByName("José Pinet");
+    const login = await loginEmployee({ employeeNumber: e.employee_number, pin: TEST_PIN }, meta(mx("2026-12-04T17:05:00"), "10.2.2.2"));
+    expect((await getAttendanceView(login.employee, mx("2026-12-04T16:59:59"))).windowState).toBe("BEFORE");
+    const open = await getAttendanceView(login.employee, mx("2026-12-04T17:00:00"));
+    expect(open).toMatchObject({ windowState: "OPEN", shift: { code: "NOCHE", lastAllowed: "19:19:59" } });
+    expect((await getAttendanceView(login.employee, mx("2026-12-04T19:20:00"))).windowState).toBe("CLOSED");
+    const r = await confirmAttendance(e.id, meta(mx("2026-12-04T19:19:59")));
+    expect(r).toMatchObject({ shiftCode: "NOCHE", operationalDate: "2026-12-04" });
+    // Después de las 19:20 y en la madrugada sigue viendo su registro de la noche
+    expect((await getAttendanceView(login.employee, mx("2026-12-05T02:00:00"))).existing?.operationalDate).toBe("2026-12-04");
+  });
+});
+
+describe("Perfil del empleado: cambiar PIN", () => {
+  it("valida el PIN actual y el nuevo; después solo funciona el nuevo", async () => {
+    const e = await employeeByName("Gustavo Mata");
+    const t = meta(mx("2026-12-05T10:00:00"), "10.1.9.9");
+    const s1 = await setupEmployeePin({ employeeNumber: e.employee_number, pin: "640213", pinConfirm: "640213" }, t);
+    await expect(changeEmployeePin(s1.employee, { currentPin: "111999", newPin: "802341", newPinConfirm: "802341" }, t))
+      .rejects.toMatchObject({ code: "BAD_CURRENT_PIN" });
+    await expect(changeEmployeePin(s1.employee, { currentPin: "640213", newPin: "640213", newPinConfirm: "640213" }, t))
+      .rejects.toMatchObject({ code: "SAME_PIN" });
+    await expect(changeEmployeePin(s1.employee, { currentPin: "640213", newPin: "999999", newPinConfirm: "999999" }, t))
+      .rejects.toMatchObject({ code: "WEAK_PIN" });
+    await changeEmployeePin(s1.employee, { currentPin: "640213", newPin: "802341", newPinConfirm: "802341" }, t);
+    await expect(loginEmployee({ employeeNumber: e.employee_number, pin: "640213" }, t)).rejects.toMatchObject({ status: 401 });
+    expect((await loginEmployee({ employeeNumber: e.employee_number, pin: "802341" }, t)).employee.id).toBe(e.id);
+  });
+});
+
+const fakeJpeg = () => "data:image/jpeg;base64," + Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(400, 7)]).toString("base64");
+const sessionAt = async (name: string, pin = TEST_PIN) => {
+  const e = await employeeByName(name);
+  return (await loginEmployee({ employeeNumber: e.employee_number, pin }, meta(mx("2026-12-03T08:00:00"), "10.6.6.6"))).employee;
+};
+
+describe("Foto de perfil", () => {
+  it("rechaza archivos que no son imagen o demasiado grandes", () => {
+    expect(() => decodeImage("data:image/png;base64," + Buffer.from("<script>alert(1)</script>".repeat(5)).toString("base64")))
+      .toThrow(/Formato no permitido/);
+    expect(() => decodeImage("data:image/jpeg;base64," + Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(400 * 1024)]).toString("base64")))
+      .toThrow(/demasiado grande/);
+  });
+
+  it("solo la ven el propio empleado, sus compañeros de área y el supervisor", async () => {
+    const owner = await sessionAt("Alexis Altamirano"); // Central
+    await setEmployeePhoto(owner, fakeJpeg(), "ip");
+    const sameArea = await sessionAt("Manuel Cruz"); // Central · PT
+    const otherArea = await sessionAt("David Ponce"); // RC
+    expect(await getPhotoFor(owner.id, { type: "EMPLOYEE", employee: owner })).not.toBeNull();
+    expect(await getPhotoFor(owner.id, { type: "EMPLOYEE", employee: sameArea })).not.toBeNull();
+    expect(await getPhotoFor(owner.id, { type: "EMPLOYEE", employee: otherArea })).toBeNull();
+    expect((await getPhotoFor(owner.id, { type: "USER" }))?.contentType).toBe("image/jpeg");
+    await expect(deleteEmployeePhoto(owner.id, { type: "EMPLOYEE", employee: otherArea }, "ip")).rejects.toMatchObject({ status: 403 });
+    await deleteEmployeePhoto(owner.id, { type: "USER", user: admin }, "ip");
+    expect(await getPhotoFor(owner.id, { type: "USER" })).toBeNull();
+  });
+});
+
+describe("Mi grupo: cada quien ve solo a su área", () => {
+  const now = mx("2026-12-03T08:00:00");
+  it("Central ve solo a Central (incluye PT); RC solo a RC; Lavadoras solo a Lavadoras", async () => {
+    const central = await getMyGroup(await sessionAt("Alexis Altamirano"), now);
+    expect(central.departmentName).toBe("Central");
+    expect(central.members).toHaveLength(19);
+    expect(central.members.map((m) => m.fullName)).toContain("Manuel Cruz");
+    expect(central.members.map((m) => m.fullName)).not.toContain("David Ponce");
+    expect(central.leaderView).toBeNull(); // un empleado no ve la asistencia de otros
+
+    const rc = await getMyGroup(await sessionAt("David Ponce"), now);
+    expect(rc.members).toHaveLength(12);
+    expect(rc.members.every((m) => !["Alexis Altamirano", "Jonathan Cruz"].includes(m.fullName))).toBe(true);
+
+    const lav = await getMyGroup(await sessionAt("Miguel Cruz"), now);
+    expect(lav.members.map((m) => m.fullName).sort()).toEqual(["Carlos González", "Gustavo Mata", "Jonathan Cruz", "Miguel Cruz", "Norberto Sánchez"]);
+  });
+
+  it("los líderes ven quién registró asistencia, solo de su área", async () => {
+    const isaias = await getMyGroup(await sessionAt("Isaías Romero"), now);
+    expect(isaias.isLeader).toBe(true);
+    expect(isaias.leaderView).toMatchObject({ date: "2026-12-03", shiftCode: "DIA", confirmed: 4, total: 11 });
+    const names = isaias.leaderView!.rows.map((r) => r.fullName);
+    expect(names).toContain("Manuel Cruz");
+    expect(names).not.toContain("Arturo Mata");
+    expect(isaias.leaderView!.rows.find((r) => r.fullName === "Moisés Muñoz")!.status).toBe("CONFIRMADO");
+    // Sin datos administrativos (motivos)
+    expect(Object.keys(isaias.leaderView!.rows[0])).not.toContain("incidentReason");
+
+    // A las 20:00 el líder de día sigue viendo por defecto SU turno (día)
+    const evening = await getMyGroup(await sessionAt("Isaías Romero"), mx("2026-12-03T20:00:00"));
+    expect(evening.leaderView).toMatchObject({ date: "2026-12-03", shiftCode: "DIA", confirmed: 4 });
+    const night = await getMyGroup(await sessionAt("Isaías Romero"), now, "NOCHE");
+    expect(night.leaderView).toMatchObject({ shiftCode: "NOCHE", total: 8 });
+
+    const gm = await getMyGroup(await sessionAt("Gerardo Marroquín", "731904"), now); // su PIN se cambió en una prueba anterior
+    expect(gm.leaderView!.rows.every((r) => r.subareaName === null)).toBe(true);
+    expect(gm.leaderView!.total).toBe(6);
+    expect(gm.leaderView!.rows.map((r) => r.fullName)).not.toContain("Isaías Romero");
   });
 });

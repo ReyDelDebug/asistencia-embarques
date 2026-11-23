@@ -1,17 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Alert, api, ApiError, Badge, Button, dateLong, dateShort, inputClass, time12, timeMx } from "./ui";
+import { Alert, api, ApiError, Avatar, Badge, Button, cx, dateLong, dateShort, inputClass, time12, timeMx } from "./ui";
+import GroupTab from "./employee/GroupTab";
+import ProfileTab from "./employee/ProfileTab";
 import { useServerClock } from "./useServerClock";
 
 interface View {
-  employee: { fullName: string; employeeNumber: string; role: string; departmentName: string | null; subareaName: string | null };
+  employee: { id: number; fullName: string; employeeNumber: string; role: string; departmentName: string | null; subareaName: string | null };
   localDate: string;
   shift: { code: string; name: string; openTime: string; closeTime: string; lastAllowed: string };
   operationalDate: string;
   windowState: "BEFORE" | "OPEN" | "CLOSED";
   existing: { operationalDate: string; confirmedAt: string } | null;
   nextChange: { date: string; shiftCode: string; shiftName: string } | null;
+  photoVersion: string | null;
 }
 
 interface LeaveReq {
@@ -48,6 +51,7 @@ export default function EmployeeApp() {
   const [pin, setPin] = useState("");
   const [pin2, setPin2] = useState("");
   const [justRegistered, setJustRegistered] = useState(false);
+  const [tab, setTab] = useState<"asistencia" | "grupo" | "perfil">("asistencia");
 
   const loadView = useCallback(async () => {
     try {
@@ -148,6 +152,7 @@ export default function EmployeeApp() {
     setJustRegistered(false);
     setEmployeeNumber("");
     setError(null);
+    setTab("asistencia");
     setScreen("number");
   }
 
@@ -222,11 +227,33 @@ export default function EmployeeApp() {
         </form>
       )}
 
-      {(screen === "main" || screen === "success") && view && (
+      {view && ["main", "success", "leave"].includes(screen) && (
+        <nav className="mb-4 grid grid-cols-3 gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm" aria-label="Secciones">
+          {([["asistencia", "Asistencia"], ["grupo", "Mi grupo"], ["perfil", "Mi perfil"]] as const).map(([k, l]) => (
+            <button key={k} onClick={() => { setTab(k); setError(null); if (k !== "asistencia" && screen === "leave") setScreen(view.existing ? "success" : "main"); }}
+              aria-current={tab === k ? "page" : undefined}
+              className={cx("rounded-md px-2 py-2 text-sm font-semibold", tab === k ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50")}>
+              {l}
+            </button>
+          ))}
+        </nav>
+      )}
+
+      {view && tab === "grupo" && ["main", "success", "leave"].includes(screen) && <GroupTab />}
+
+      {view && tab === "perfil" && ["main", "success", "leave"].includes(screen) && (
+        <>
+          <ProfileTab employeeId={view.employee.id} fullName={view.employee.fullName} employeeNumber={view.employee.employeeNumber}
+            area={areaLabel(view)} photoVersion={view.photoVersion} onPhotoChanged={loadView} />
+          <Button variant="ghost" onClick={onLogout} className="mt-4 w-full">Cerrar sesión</Button>
+        </>
+      )}
+
+      {tab === "asistencia" && (screen === "main" || screen === "success") && view && (
         <ShiftCard view={view} />
       )}
 
-      {screen === "main" && view && (
+      {tab === "asistencia" && screen === "main" && view && (
         <section className="mt-4 space-y-4">
           {view.windowState === "OPEN" ? (
             <>
@@ -252,7 +279,7 @@ export default function EmployeeApp() {
         </section>
       )}
 
-      {screen === "success" && view?.existing && (
+      {tab === "asistencia" && screen === "success" && view?.existing && (
         <section className="mt-4 space-y-4">
           <div className="rounded-lg border border-emerald-200 bg-white p-6 text-center shadow-sm">
             <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-3xl text-emerald-700">✓</div>
@@ -271,7 +298,7 @@ export default function EmployeeApp() {
         </section>
       )}
 
-      {screen === "leave" && (
+      {tab === "asistencia" && screen === "leave" && (
         <LeaveScreen onBack={() => { setScreen(view?.existing ? "success" : "main"); loadView(); }} />
       )}
 
@@ -283,8 +310,13 @@ export default function EmployeeApp() {
 function ShiftCard({ view }: { view: View }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Empleado</p>
-      <p className="text-lg font-bold text-slate-900">{view.employee.fullName}</p>
+      <div className="flex items-center gap-3">
+        <Avatar employeeId={view.employee.id} name={view.employee.fullName} version={view.photoVersion} size={52} />
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Empleado</p>
+          <p className="truncate text-lg font-bold text-slate-900">{view.employee.fullName}</p>
+        </div>
+      </div>
       <div className="mt-3 rounded-md bg-slate-900 px-4 py-3 text-white">
         <p className="text-xs uppercase tracking-wide text-slate-300">Tu turno asignado</p>
         <p className="text-2xl font-bold">{view.shift.name.toUpperCase()}</p>

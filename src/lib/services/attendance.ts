@@ -7,6 +7,7 @@ import { logAudit } from "./audit";
 import type { RequestMeta, SessionEmployee } from "./auth";
 import { getShifts, type Shift } from "./catalog";
 import { getEffectiveShiftId, getNextChange, type NextChange } from "./rol";
+import { getPhotoVersion } from "./photos";
 
 export const CLOSED_MESSAGE = "EL REGISTRO DE ASISTENCIA SE ENCUENTRA CERRADO.";
 
@@ -28,6 +29,7 @@ export interface AttendanceView {
   openShiftNow: string | null;
   existing: AttendanceRecord | null;
   nextChange: NextChange | null;
+  photoVersion: string | null;
 }
 
 async function findRecord(employeeId: number, shiftId: number, date: string): Promise<AttendanceRecord | null> {
@@ -80,6 +82,7 @@ export async function getAttendanceView(employee: SessionEmployee, now: Date): P
     openShiftNow: findOpenShift(now, shifts)?.shift.code ?? null,
     existing,
     nextChange: await getNextChange(employee.id, local.date),
+    photoVersion: await getPhotoVersion(employee.id),
   };
 }
 
