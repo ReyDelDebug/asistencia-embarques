@@ -477,7 +477,7 @@ describe("20. Funcionamiento desde celular (Chrome con emulación)", () => {
         expect(await page.$eval("[role=alert]", (e) => e.textContent)).toContain("fácil de adivinar");
         await page.click("#newpin", { count: 3 });
         for (let i = 0; i < 6; i++) await page.keyboard.press("Backspace");
-        await page.click("#newpin2");
+        await page.click("#newpin2", { count: 3 });
         for (let i = 0; i < 6; i++) await page.keyboard.press("Backspace");
         await page.type("#newpin", "582047");
         await page.type("#newpin2", "582047");
@@ -489,7 +489,7 @@ describe("20. Funcionamiento desde celular (Chrome con emulación)", () => {
         await page.click("button[type=submit]");
         await page.waitForSelector("[role=alert]");
         expect(await page.$eval("[role=alert]", (e) => e.textContent)).toContain("incorrecto");
-        await page.click("#pin");
+        await page.click("#pin", { count: 3 });
         for (let i = 0; i < 6; i++) await page.keyboard.press("Backspace");
         await page.type("#pin", pinOf(S, d.emp.name));
         await page.click("button[type=submit]");
@@ -497,7 +497,7 @@ describe("20. Funcionamiento desde celular (Chrome con emulación)", () => {
       await page.waitForFunction(() => document.body.innerText.includes("CONFIRMAR MI ASISTENCIA"));
       const mainText = await page.evaluate(() => document.body.innerText);
       expect(mainText).toContain(d.emp.name);
-      expect(mainText.toUpperCase()).toContain("TU TURNO ASIGNADO");
+      expect(mainText.toUpperCase()).toContain("TU TURNO DE HOY");
       await page.screenshot({ path: `${SHOTS}/${d.name}-2-confirmar.png` });
 
       const btn = await page.waitForSelector("xpath/.//button[contains(., 'CONFIRMAR MI ASISTENCIA')]");

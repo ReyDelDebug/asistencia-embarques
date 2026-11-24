@@ -38,7 +38,7 @@ export default function LateNoticeForm({ onDone, onCancel }: { onDone: () => voi
       {error && <Alert>{error}</Alert>}
       <div className="grid grid-cols-2 gap-2">
         <Button type="button" variant="secondary" onClick={onCancel}>Cancelar</Button>
-        <Button type="submit" loading={busy} disabled={reason.trim().length < 3 || !eta}>Enviar aviso</Button>
+        <Button variant="brand" type="submit" loading={busy} disabled={reason.trim().length < 3 || !eta}>Enviar aviso</Button>
       </div>
       <p className="text-xs text-orange-800">Tu líder y tu supervisor verán el aviso. Cuando llegues, entra y confirma tu asistencia.</p>
     </form>

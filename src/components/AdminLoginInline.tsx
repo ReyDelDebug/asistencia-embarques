@@ -23,7 +23,7 @@ export default function AdminLoginInline() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+    <form onSubmit={onSubmit} className="space-y-4 rounded-2xl border border-line bg-white p-5 shadow-sm">
       <div>
         <label htmlFor="adm-user" className="mb-1 block text-sm font-semibold text-slate-700">Usuario</label>
         <input id="adm-user" className={`${inputClass} py-3`} autoComplete="username" autoCapitalize="none" required
@@ -35,7 +35,7 @@ export default function AdminLoginInline() {
           value={password} onChange={(e) => setPassword(e.target.value)} />
       </div>
       {error && <Alert>{error}</Alert>}
-      <Button type="submit" loading={busy} className="w-full py-3.5 text-base">ENTRAR AL PANEL</Button>
+      <Button variant="brand" type="submit" loading={busy} className="w-full py-3.5 text-base">ENTRAR AL PANEL</Button>
       <p className="text-center text-xs text-slate-500">Acceso exclusivo para supervisores.</p>
     </form>
   );

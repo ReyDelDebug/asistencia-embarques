@@ -11,16 +11,21 @@ const BOOTS = Array.from({ length: 29 }, (_, i) => 22 + i * 0.5); // 22 a 36
 export function VacationCard({ v }: { v: Vacations | null }) {
   if (!v) return null;
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <p className="text-sm font-bold text-slate-900">🏖️ Mis vacaciones</p>
+    <div className="rounded-2xl border border-line bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/25 text-[#8A5A00]" aria-hidden>
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /></svg>
+        </span>
+        <p className="text-sm font-bold text-ink">Mis vacaciones</p>
+      </div>
       {v.assigned == null ? (
         <p className="mt-1 text-sm text-slate-600">Tu supervisor aún no registra tus días de vacaciones.</p>
       ) : (
         <>
           <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-            <div className="rounded-md bg-emerald-50 px-2 py-2"><p className="text-2xl font-bold tabular text-emerald-800">{v.available}</p><p className="text-xs text-emerald-900">Disponibles</p></div>
-            <div className="rounded-md bg-slate-50 px-2 py-2"><p className="text-2xl font-bold tabular text-slate-800">{v.used}</p><p className="text-xs text-slate-600">Tomados</p></div>
-            <div className="rounded-md bg-slate-50 px-2 py-2"><p className="text-2xl font-bold tabular text-slate-800">{v.assigned}</p><p className="text-xs text-slate-600">Asignados</p></div>
+            <div className="rounded-xl bg-[#E3F4EA] px-2 py-2"><p className="font-display text-2xl font-bold tabular text-[#17663A]">{v.available}</p><p className="text-xs text-emerald-900">Disponibles</p></div>
+            <div className="rounded-xl bg-ground px-2 py-2"><p className="font-display text-2xl font-bold tabular text-ink">{v.used}</p><p className="text-xs text-slate-600">Tomados</p></div>
+            <div className="rounded-xl bg-ground px-2 py-2"><p className="font-display text-2xl font-bold tabular text-ink">{v.assigned}</p><p className="text-xs text-slate-600">Asignados</p></div>
           </div>
           <p className="mt-2 text-xs text-slate-500">
             Periodo desde el {dateShort(v.periodStart)}{v.pending ? ` · ${v.pending} día(s) en solicitudes pendientes` : ""}.
@@ -71,9 +76,9 @@ export default function MyDataForm({ onSaved }: { onSaved?: () => void }) {
   return (
     <>
       <VacationCard v={vac} />
-      <form onSubmit={save} className="space-y-3 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <form onSubmit={save} className="space-y-3 rounded-2xl border border-line bg-white p-5 shadow-sm">
         <div>
-          <p className="text-base font-bold text-slate-900">Mis datos</p>
+          <p className="text-base font-bold text-ink">Mis datos</p>
           {!profile.complete && <p className="mt-1 text-sm text-amber-700">Te falta: {profile.missing.join(", ")}.</p>}
         </div>
         <label className="block text-sm">
@@ -111,7 +116,7 @@ export default function MyDataForm({ onSaved }: { onSaved?: () => void }) {
           </label>
         </div>
         {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
-        <Button type="submit" loading={busy} disabled={!nameOk} className="w-full">Guardar mis datos</Button>
+        <Button variant="brand" type="submit" loading={busy} disabled={!nameOk} className="w-full">Guardar mis datos</Button>
       </form>
     </>
   );

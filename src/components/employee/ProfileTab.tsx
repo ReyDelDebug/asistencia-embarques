@@ -100,14 +100,14 @@ export default function ProfileTab({
 
   return (
     <section className="space-y-4">
-      <div className="rounded-lg border border-slate-200 bg-white p-5 text-center shadow-sm">
+      <div className="rounded-2xl border border-line bg-white p-5 text-center shadow-sm">
         <div className="flex justify-center"><Avatar employeeId={employeeId} name={fullName} version={photoVersion} size={112} /></div>
-        <p className="mt-3 text-lg font-bold text-slate-900">{fullName}</p>
+        <p className="mt-3 text-lg font-bold text-ink">{fullName}</p>
         <p className="text-sm text-slate-500">#{employeeNumber} · {area}</p>
         <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/*" className="hidden" onChange={onFile} />
         <div className="mt-4 grid grid-cols-2 gap-2">
-          <Button onClick={() => fileRef.current?.click()} loading={photoBusy}>{photoVersion ? "Cambiar foto" : "Agregar foto"}</Button>
-          <Button variant="secondary" onClick={removePhoto} disabled={!photoVersion || photoBusy}>Quitar foto</Button>
+          <Button variant="brand" onClick={() => fileRef.current?.click()} loading={photoBusy}>{photoVersion ? "Cambiar foto" : "Agregar foto"}</Button>
+          <Button variant="outline" onClick={removePhoto} disabled={!photoVersion || photoBusy}>Quitar foto</Button>
         </div>
         <p className="mt-2 text-xs text-slate-500">Tu foto solo la ven tus compañeros de área y los supervisores.</p>
         {photoMsg && <div className="mt-3 text-left"><Alert kind={photoMsg.kind}>{photoMsg.text}</Alert></div>}
@@ -115,13 +115,13 @@ export default function ProfileTab({
 
       <MyDataForm onSaved={onPhotoChanged} />
 
-      <form onSubmit={changePin} className="space-y-3 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-        <p className="text-base font-bold text-slate-900">Restablecer mi PIN</p>
+      <form onSubmit={changePin} className="space-y-3 rounded-2xl border border-line bg-white p-5 shadow-sm">
+        <p className="text-base font-bold text-ink">Restablecer mi PIN</p>
         {pinField("curpin", "PIN actual", current, setCurrent, "current-password")}
         {pinField("newpinp", "PIN nuevo (4 a 6 números)", next, setNext, "new-password")}
         {pinField("newpinp2", "Repite el PIN nuevo", repeat, setRepeat, "new-password")}
         {pinMsg && <Alert kind={pinMsg.kind}>{pinMsg.text}</Alert>}
-        <Button type="submit" loading={pinBusy} className="w-full">Guardar nuevo PIN</Button>
+        <Button variant="brand" type="submit" loading={pinBusy} className="w-full">Guardar nuevo PIN</Button>
         <p className="text-xs text-slate-500">¿Olvidaste tu PIN actual? Pide a tu supervisor que lo restablezca; al entrar crearás uno nuevo.</p>
       </form>
     </section>

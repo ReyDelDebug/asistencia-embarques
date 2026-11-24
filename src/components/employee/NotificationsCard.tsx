@@ -93,13 +93,18 @@ export default function NotificationsCard() {
   if (status === "loading" || status === "hidden") return null;
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
-      <p className="font-bold text-slate-900">🔔 Recordatorios</p>
+    <div className="rounded-2xl border border-line bg-white p-4 text-sm shadow-sm">
+      <div className="flex items-center gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-soft text-brand" aria-hidden>
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></svg>
+        </span>
+        <p className="font-bold text-ink">Recordatorios</p>
+      </div>
       {status === "on" && (
         <>
           <p className="mt-1 text-slate-600">Avisos activados en este celular. Te avisaremos 15 y 5 minutos antes del cierre si no has registrado.</p>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button variant="secondary" onClick={test} loading={busy}>Enviar prueba</Button>
+            <Button variant="outline" onClick={test} loading={busy}>Enviar prueba</Button>
             <Button variant="ghost" onClick={disable} disabled={busy}>Desactivar</Button>
           </div>
         </>
@@ -107,7 +112,7 @@ export default function NotificationsCard() {
       {status === "off" && (
         <>
           <p className="mt-1 text-slate-600">Recibe un aviso 15 y 5 minutos antes del cierre si aún no registras tu asistencia.</p>
-          <Button onClick={enable} loading={busy} className="mt-3 w-full">Activar avisos</Button>
+          <Button variant="brand" onClick={enable} loading={busy} className="mt-3 w-full">Activar avisos</Button>
         </>
       )}
       {status === "ios-install" && (

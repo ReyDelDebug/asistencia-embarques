@@ -86,23 +86,23 @@ export default function GroupTab() {
   return (
     <section className="space-y-4">
       {lv && (
-        <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="rounded-2xl border border-line bg-white shadow-sm">
           <div className="border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-bold text-slate-900">Asistencia de {data.departmentName}</p>
+              <p className="text-sm font-bold text-ink">Asistencia de {data.departmentName}</p>
               <div className="inline-flex overflow-hidden rounded-md border border-slate-300">
                 {[["DIA", "Día"], ["NOCHE", "Noche"]].map(([code, label]) => (
                   <button key={code} onClick={() => setShift(code)}
-                    className={cx("px-3 py-1 text-xs font-semibold", lv.shiftCode === code ? "bg-slate-900 text-white" : "bg-white text-slate-700")}>
+                    className={cx("px-3 py-1 text-xs font-semibold", lv.shiftCode === code ? "bg-brand text-white" : "bg-white text-slate-700")}>
                     {label}
                   </button>
                 ))}
               </div>
             </div>
             <p className="mt-1 text-xs text-slate-500">{dateLong(lv.date)} · Turno {lv.shiftName}</p>
-            <p className="mt-2 text-2xl font-bold tabular text-slate-900">{lv.confirmed} <span className="text-base font-medium text-slate-500">de {lv.total} registrados</span></p>
+            <p className="mt-2 text-2xl font-bold tabular text-ink">{lv.confirmed} <span className="text-base font-medium text-slate-500">de {lv.total} registrados</span></p>
             {lv.rows.filter((r) => r.canExtend).length > 1 && (
-              <Button variant="secondary" className="mt-2 w-full text-xs" loading={busy}
+              <Button variant="outline" className="mt-2 w-full text-xs" loading={busy}
                 onClick={() => extend(lv.rows.filter((r) => r.canExtend).map((r) => r.employeeId))}>
                 Abrir registro a todos los que faltan ({lv.rows.filter((r) => r.canExtend).length})
               </Button>
@@ -114,7 +114,7 @@ export default function GroupTab() {
               <li key={r.employeeId} className="flex items-center gap-3 px-4 py-2">
                 <Avatar employeeId={r.employeeId} name={r.fullName} version={r.photoVersion} size={36} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-slate-900">{r.fullName}</p>
+                  <p className="truncate text-sm font-semibold text-ink">{r.fullName}</p>
                   <p className="text-xs text-slate-500">
                     {r.role === "LEADER" ? "Líder" : "Empleado"}{r.subareaName ? ` · ${r.subareaName}` : ""}
                     {r.confirmedAt ? ` · ${timeMx(r.confirmedAt)}` : ""}
@@ -146,9 +146,9 @@ export default function GroupTab() {
         </div>
       )}
 
-      <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="rounded-2xl border border-line bg-white shadow-sm">
         <div className="border-b border-slate-200 px-4 py-3">
-          <p className="text-sm font-bold text-slate-900">Mi grupo · {data.departmentName}</p>
+          <p className="text-sm font-bold text-ink">Mi grupo · {data.departmentName}</p>
           <p className="text-xs text-slate-500">{data.members.length} compañero(s)</p>
         </div>
         <ul className="divide-y divide-slate-100">
@@ -156,12 +156,12 @@ export default function GroupTab() {
             <li key={m.employeeId} className={cx("flex items-center gap-3 px-4 py-2.5", m.isMe && "bg-slate-50")}>
               <Avatar employeeId={m.employeeId} name={m.fullName} version={m.photoVersion} size={44} />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-slate-900">
+                <p className="truncate text-sm font-semibold text-ink">
                   {m.fullName}{m.isMe && <span className="ml-1 text-xs font-normal text-slate-500">(tú)</span>}
                 </p>
                 <p className="text-xs text-slate-500">{m.subareaName ? `${m.subareaName} · ` : ""}Turno {m.shiftName}</p>
               </div>
-              {m.role === "LEADER" && <Badge className="bg-slate-900 text-white ring-slate-900">Líder</Badge>}
+              {m.role === "LEADER" && <Badge className="bg-brand text-white ring-brand">Líder</Badge>}
             </li>
           ))}
         </ul>
