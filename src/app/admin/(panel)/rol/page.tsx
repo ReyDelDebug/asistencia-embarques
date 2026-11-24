@@ -1,14 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, api, Badge, Button, Card, cx, dateLong, dateShort, inputClass, ROLE_LABELS } from "@/components/ui";
+import { Alert, api, Badge, Button, Card, cx, dateLong, dateShort, Field, inputClass, Modal, ROLE_LABELS } from "@/components/ui";
 
 interface RolRow {
   employeeId: number; employeeNumber: string; fullName: string; role: string;
   departmentId: number | null; departmentName: string; subareaId: number | null; subareaName: string | null;
   shiftCode: string; since: string | null; nextChange: { date: string; shiftCode: string; shiftName: string } | null;
+  temporary: boolean; until: string | null; homeDepartmentName: string | null; support: boolean;
 }
-interface RolData { date: string; today: string; currentMonday: string; rows: RolRow[] }
+interface RolData {
+  date: string; today: string; currentMonday: string; rows: RolRow[];
+  departments: { id: number; name: string }[]; subareas: { id: number; departmentId: number; name: string }[];
+}
+interface AreaForm { row: RolRow; shiftCode: string; departmentId: string; subareaId: string; from: string; until: string; temporary: boolean }
 
 function addDays(date: string, n: number) {
   const d = new Date(`${date}T12:00:00Z`);
@@ -29,6 +34,9 @@ export default function RolPage() {
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState("");
+  const [area, setArea] = useState<AreaForm | null>(null);
+  const [areaBusy, setAreaBusy] = useState(false);
+  const [areaErr, setAreaErr] = useState<string | null>(null);
 
   const load = useCallback(async (d: string | null) => {
     try {
@@ -59,6 +67,7 @@ export default function RolPage() {
 
   const shiftOf = (r: RolRow) => changes[r.employeeId] ?? r.shiftCode;
   const setShift = (r: RolRow, code: string) => {
+    if (r.temporary) return; // en apoyo temporal: primero terminar el apoyo
     setChanges((c) => {
       const n = { ...c };
       if (code === r.shiftCode) delete n[r.employeeId]; else n[r.employeeId] = code;
@@ -82,6 +91,48 @@ export default function RolPage() {
     }
   }
 
+  function openArea(r: RolRow) {
+    setAreaErr(null);
+    setArea({
+      row: r, shiftCode: r.shiftCode, departmentId: String(r.departmentId ?? data?.departments[0]?.id ?? ""), subareaId: String(r.subareaId ?? ""),
+      from: date ?? data?.today ?? "", until: "", temporary: true,
+    });
+  }
+
+  async function saveArea() {
+    if (!area) return;
+    setAreaBusy(true);
+    setAreaErr(null);
+    try {
+      await api("/api/admin/rol/area", {
+        method: "POST",
+        json: {
+          employeeId: area.row.employeeId, shiftCode: area.shiftCode, departmentId: Number(area.departmentId),
+          subareaId: area.subareaId ? Number(area.subareaId) : null, effectiveFrom: area.from,
+          endDate: area.temporary ? area.until || null : null,
+        },
+      });
+      setMsg({ kind: "success", text: `${area.row.fullName}: cambio de área guardado.` });
+      setArea(null);
+      await load(date);
+    } catch (e) {
+      setAreaErr((e as Error).message);
+    } finally {
+      setAreaBusy(false);
+    }
+  }
+
+  async function finishSupport(r: RolRow) {
+    if (!confirm(`¿Terminar el apoyo de ${r.fullName}? A partir de mañana regresa a ${r.homeDepartmentName ?? "su área"}.`)) return;
+    try {
+      await api("/api/admin/rol/area/end", { method: "POST", json: { employeeId: r.employeeId } });
+      setMsg({ kind: "success", text: `Apoyo de ${r.fullName} terminado.` });
+      await load(date);
+    } catch (e) {
+      setMsg({ kind: "error", text: (e as Error).message });
+    }
+  }
+
   const pending = Object.keys(changes).length;
   const total = (code: string) => (data?.rows ?? []).filter((r) => shiftOf(r) === code).length;
 
@@ -89,7 +140,7 @@ export default function RolPage() {
     <div className="space-y-5 pb-24">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Rol de turno</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Rol de turno</h1>
           <p className="text-sm text-slate-500">Asigna Día o Noche por persona. El cambio aplica desde la fecha elegida y sigue igual hasta que lo vuelvas a cambiar.</p>
         </div>
         {data && (
@@ -157,11 +208,23 @@ export default function RolPage() {
                             : r.since ? ` · ${SHIFT_LABEL[r.shiftCode]} desde ${dateShort(r.since)}` : ""}
                           {r.nextChange && !changed && ` · pasa a ${r.nextChange.shiftName} el ${dateShort(r.nextChange.date)}`}
                         </p>
+                        {r.support && (
+                          <p className="text-xs font-semibold text-sky-800">
+                            {r.temporary ? `Apoyo hasta el ${dateShort(r.until!)}` : "Cambio de área"}{r.homeDepartmentName ? ` · de ${r.homeDepartmentName}` : ""}
+                            {r.temporary && <> · <button className="underline" onClick={() => finishSupport(r)}>Terminar apoyo</button></>}
+                          </p>
+                        )}
+                        {r.role !== "SUPERVISOR" && (
+                          <button className="text-xs font-semibold text-slate-600 underline hover:text-emerald-700" onClick={() => openArea(r)}>
+                            Cambiar área
+                          </button>
+                        )}
                       </div>
                       <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-slate-300">
                         {["DIA", "NOCHE"].map((code) => (
-                          <button key={code} onClick={() => setShift(r, code)} aria-pressed={current === code}
-                            className={cx("px-3 py-1.5 text-xs font-semibold",
+                          <button key={code} onClick={() => setShift(r, code)} aria-pressed={current === code} disabled={r.temporary}
+                            title={r.temporary ? "Está en apoyo temporal" : undefined}
+                            className={cx("px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60",
                               current === code ? (code === "DIA" ? "bg-amber-500 text-white" : "bg-indigo-700 text-white") : "bg-white text-slate-600 hover:bg-slate-50")}>
                             {SHIFT_LABEL[code]}
                           </button>
@@ -176,7 +239,60 @@ export default function RolPage() {
         })}
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-lg backdrop-blur">
+      <Modal open={!!area} title={area ? `Cambiar área · ${area.row.fullName}` : ""} onClose={() => setArea(null)}
+        footer={<><Button variant="secondary" onClick={() => setArea(null)}>Cancelar</Button><Button onClick={saveArea} loading={areaBusy}>Guardar cambio</Button></>}>
+        {area && data && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600">Ahora: {area.row.departmentName}{area.row.subareaName ? ` · ${area.row.subareaName}` : ""} · {SHIFT_LABEL[area.row.shiftCode]}</p>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Turno destino">
+                <select className={inputClass} value={area.shiftCode} onChange={(e) => setArea({ ...area, shiftCode: e.target.value })}>
+                  <option value="DIA">Día</option><option value="NOCHE">Noche</option>
+                </select>
+              </Field>
+              <Field label="Área destino">
+                <select className={inputClass} value={area.departmentId} onChange={(e) => setArea({ ...area, departmentId: e.target.value, subareaId: "" })}>
+                  {data.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              </Field>
+            </div>
+            {data.subareas.some((x) => String(x.departmentId) === area.departmentId) && (
+              <Field label="Subárea">
+                <select className={inputClass} value={area.subareaId} onChange={(e) => setArea({ ...area, subareaId: e.target.value })}>
+                  <option value="">— General —</option>
+                  {data.subareas.filter((x) => String(x.departmentId) === area.departmentId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                </select>
+              </Field>
+            )}
+            <div className="inline-flex w-full overflow-hidden rounded-md border border-slate-300">
+              {[[true, "Apoyo temporal"], [false, "Cambio permanente"]].map(([v, l]) => (
+                <button key={String(v)} type="button" onClick={() => setArea({ ...area, temporary: v as boolean })}
+                  className={cx("flex-1 px-3 py-2 text-sm font-semibold", area.temporary === v ? "bg-slate-900 text-white" : "bg-white text-slate-700")}>
+                  {l as string}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="A partir de">
+                <input type="date" className={inputClass} min={data.today} value={area.from} onChange={(e) => setArea({ ...area, from: e.target.value })} />
+              </Field>
+              {area.temporary && (
+                <Field label="Hasta (último día)">
+                  <input type="date" className={inputClass} min={area.from} value={area.until} onChange={(e) => setArea({ ...area, until: e.target.value })} />
+                </Field>
+              )}
+            </div>
+            <p className="text-xs text-slate-500">
+              {area.temporary
+                ? "Al terminar el apoyo regresa solo a su área y turno. Mientras tanto cuenta en el área destino y solo lo ve el líder de esa área."
+                : "Queda en la nueva área hasta que lo vuelvas a cambiar."}
+            </p>
+            {areaErr && <Alert>{areaErr}</Alert>}
+          </div>
+        )}
+      </Modal>
+
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-lg backdrop-blur lg:left-64">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
           <p className="text-sm text-slate-700">{pending ? <><b>{pending}</b> cambio(s) sin guardar · aplicarán desde el {date ? dateShort(date) : ""}</> : "Sin cambios pendientes"}</p>
           <div className="flex gap-2">

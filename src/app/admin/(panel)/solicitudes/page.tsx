@@ -95,7 +95,7 @@ export default function LeavePage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-bold text-slate-900">Vacaciones y PSG</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">Vacaciones y PSG</h1>
         <p className="text-sm text-slate-500">Los trabajadores solicitan desde su celular. Al aprobar, cada día aparece automáticamente como vacaciones o PSG en el panel, el reporte y el Excel.</p>
       </div>
       {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}

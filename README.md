@@ -2,7 +2,7 @@
 
 Aplicación web para que cada empleado confirme su asistencia desde el celular con **número de empleado + PIN**. El supervisor ve un panel en tiempo real, genera automáticamente el **reporte para WhatsApp** y descarga **Excel**.
 
-- **Flujo:** el supervisor registra a cada trabajador por área y arma el rol de turno → el trabajador entra con su número, crea su PIN y confirma asistencia en su turno → el sistema marca faltas a las 07:20 / 19:20 → reporte de WhatsApp y Excel automáticos.
+- **Flujo:** el supervisor registra a cada trabajador por área y arma el rol de turno → el trabajador entra con su número, crea su PIN y confirma asistencia en su turno → el sistema marca faltas al cierre (08:00 / 20:00 o cuando el supervisor lo cierre) → reporte de WhatsApp y Excel automáticos.
 - **Stack:** Next.js 16 (App Router) + TypeScript · Tailwind CSS 4 · PostgreSQL (Supabase) · `pg` · ExcelJS
 - **Hora oficial:** la del **servidor**, convertida a `America/Mexico_City`. Nunca se usa la hora del celular.
 
@@ -14,7 +14,7 @@ Aplicación web para que cada empleado confirme su asistencia desde el celular c
 - Escribe su **número de empleado**. La **primera vez crea su propio PIN** (4–6 dígitos; se rechazan PIN fáciles como 1111 o 1234). Después entra con número + PIN. El PIN se guarda con hash scrypt.
 - Ve **su turno asignado según el rol** (Día/Noche), el próximo cambio programado, su área y el horario.
 - Puede **solicitar vacaciones o PSG** (rango de fechas) y ver si fueron aprobadas.
-- **Mi perfil:** foto de perfil (se recorta y comprime en el celular; la ven solo sus compañeros de área y los supervisores) y **restablecer su PIN** (pide el PIN actual; si lo olvidó, el supervisor lo restablece).
+- **Mi perfil:** nombre completo (obligatorio, solo letras con acentos), teléfono, fecha de nacimiento, número de botas y talla de chaleco (chico, mediano, grande); si falta algo, la app le avisa. Ve sus **días de vacaciones** disponibles, tomados y asignados. Foto de perfil (se recorta y comprime en el celular; la ven solo sus compañeros de área y los supervisores) y **restablecer su PIN** (pide el PIN actual; si lo olvidó, el supervisor lo restablece).
 - **Mi grupo:** ve únicamente a los compañeros de **su área** (Central —incluida PT—, RC o Lavadoras) con su foto, puesto y turno.
 - **Líderes:** además ven **quién ha registrado asistencia hoy en su área** (por defecto su turno; pueden cambiar a Día/Noche), sin motivos ni datos administrativos.
 - Botón **CONFIRMAR MI ASISTENCIA** → pantalla **¡ASISTENCIA REGISTRADA!** con la hora exacta.
@@ -25,24 +25,41 @@ Aplicación web para que cada empleado confirme su asistencia desde el celular c
 
 | Turno | Abre | Último segundo válido | Bloqueado desde |
 |---|---|---|---|
-| Día | 05:00:00 | 07:19:59 | 07:20:00 |
-| Noche | 17:00:00 | 19:19:59 | 19:20:00 |
+| Día | 05:00:00 | 07:59:59 | 08:00:00 |
+| Noche | 17:00:00 | 19:59:59 | 20:00:00 |
 
-Cada trabajador solo puede registrar en la ventana del turno que le asignó el supervisor en el **rol de turno**. Quien no registra antes de las 07:20 (o 19:20 en noche) aparece como **Falta** en el panel, el reporte y el Excel.
+**Control manual del supervisor** (Panel → "Registro de asistencia de hoy"): **Cerrar ahora** (antes de las 8:00), **Abrir registro** para todos aunque ya hayan pasado las 8:00 (queda abierto hasta que lo cierre o hasta el fin del día) y **Horario normal**. Solo aplica al día de hoy.
 
-**Extensión hasta las 7:30 (supervisor y líderes)**
-- A quien no registró a tiempo, el supervisor (panel) o el líder de su área ("Mi grupo") le abre el registro hasta las 07:30 / 19:30, a una persona o a todos los que faltan.
+Cada trabajador solo puede registrar en la ventana del turno que le asignó el supervisor en el **rol de turno**. Quien no registra antes del cierre (08:00 / 20:00, o cuando el supervisor lo cierre) aparece como **Falta** en el panel, el reporte y el Excel.
+
+**Abrir el registro a una persona (supervisor y líderes)**
+- A quien no registró a tiempo, el supervisor (panel) o el líder de su área ("Mi grupo") le abre el registro, a una persona o a todos los que faltan. Queda abierto hasta que lo cierren o hasta el fin del día.
 - El registro queda marcado "con extensión" con quién la autorizó; aparece en *RETARDO* del reporte y como "Confirmado (retardo)" en el Excel.
-- Un líder solo puede abrir el registro a personas de su área. A las 7:30 la extensión vence sola.
+- Un líder solo puede abrir o cerrar el registro de personas de su área.
 
 **Llegaré tarde**
-- Antes del cierre (7:20 / 19:20), el trabajador avisa la hora aproximada de llegada y el **motivo (obligatorio)**.
+- Antes del cierre (8:00 / 20:00), el trabajador avisa la hora aproximada de llegada y el **motivo (obligatorio)**.
 - Líder y supervisor lo ven como "Avisó retardo" con hora y motivo; en el reporte aparece en *RETARDO*.
 - Registra cuando llegue (hasta las 11:19 a. m. / 11:19 p. m.); si no llega, queda como Falta.
 
 **Recordatorios (notificaciones push)**
 - El trabajador toca "Activar avisos" una vez. A las 7:05 y 7:15 (19:05 y 19:15 en noche) recibe un aviso si no ha registrado, no tiene incidencia y no avisó retardo.
 - En iPhone primero hay que "Agregar a pantalla de inicio" (iOS 16.4+). Ver configuración en la sección 4b.
+
+**Calendario laboral (panel → Calendario laboral)**
+- Lunes a jueves laborable (día 7:30 a. m.–7:30 p. m., noche 7:30 p. m.–7:30 a. m.).
+- Viernes = tiempo extra (día 7:30–5:30 p. m., noche 5:30 p. m.–5:30 a. m.): trabajan todos y **quien no llega queda en DESCANSO**, no en falta. Se puede cambiar a "jornada larga" (7:30 a 7:30) o a "no se trabaja".
+- Sábado, domingo y feriados de ley (LFT art. 74) no se trabaja: no se registra, no hay faltas ni recordatorios y el reporte dice "DÍA NO LABORABLE".
+- El supervisor toca cualquier día para cambiarlo (ej. un sábado de inventario o un jueves de paro). Vacaciones y PSG solo cuentan días laborables de lunes a jueves.
+
+**Cambio de área (Rol de turno → "Cambiar área")**
+- Turno, área y subárea destino, desde una fecha. **Apoyo temporal** (con fecha de regreso: vuelve solo) o **cambio permanente**.
+- Mientras dure, cuenta en el área destino; solo lo ve el líder de esa área. El reporte lo muestra en *APOYO:* ("Gustavo Mata · apoyo en CENTRAL (de LAVADORAS)").
+
+**Ficha del empleado (panel → Empleados → clic en el nombre)**
+- Número, área, turno, teléfono, nacimiento y edad, botas, chaleco, vacaciones (asignadas, tomadas, disponibles) y **faltas de la semana y del mes**, con gráficas de las últimas 8 semanas y 6 meses.
+- "Editar datos": el supervisor corrige esos datos y captura los **días de vacaciones** y el inicio del periodo. Una solicitud de vacaciones no puede pasar de los días disponibles.
+- El supervisor registra **su propia asistencia** desde el panel (tarjeta "Mi asistencia").
 
 **Áreas:** Central (con subárea **PT**), RC y Lavadoras. Central lleva dos líderes (uno de Central y uno de PT); RC y Lavadoras, uno cada una. Los líderes y quiénes pertenecen a PT se asignan desde **Empleados**.
 
@@ -219,8 +236,8 @@ Fija el mensaje en el grupo. En el celular pueden usar "Agregar a pantalla de in
 ## 7. Pruebas
 
 ```bash
-npm test          # 82 pruebas: horarios, autenticación, reglas, reporte, Excel, auditoría (PostgreSQL real)
-npm run test:e2e  # 19 pruebas: servidor real + HTTP + Chrome emulando iPhone y Android
+npm test          # 98 pruebas: horarios, autenticación, reglas, reporte, Excel, auditoría (PostgreSQL real)
+npm run test:e2e  # 21 pruebas: servidor real + HTTP + Chrome emulando iPhone y Android
 ```
 
 Las pruebas usan una base **separada**, que se borra en cada corrida (`TEST_DATABASE_URL`, por defecto `postgres://postgres@localhost:5432/asistencia_test`). Por seguridad, solo corren si el nombre de la base contiene `test`.
@@ -243,4 +260,4 @@ tests/                       Pruebas de integración y e2e
 
 ## 9. Tablas
 
-`shifts`, `departments`, `subareas`, `employees`, `employee_photos`, `attendance_extensions`, `late_notices`, `push_subscriptions`, `push_reminders_sent`, `shift_assignments` (rol de turno), `leave_requests` (vacaciones/PSG), `users`, `attendance` (única por empleado + fecha operativa + turno, inmutable), `incidents` (una activa por empleado/fecha/turno, nunca se borran), `operational_reports`, `operational_extras`, `sessions`, `login_attempts`, `audit_logs` (inmutable), `schema_migrations`.
+`shifts`, `departments`, `subareas`, `employees`, `employee_photos`, `attendance_extensions`, `shift_window_overrides`, `work_calendar`, `late_notices`, `push_subscriptions`, `push_reminders_sent`, `shift_assignments` (rol de turno), `leave_requests` (vacaciones/PSG), `users`, `attendance` (única por empleado + fecha operativa + turno, inmutable), `incidents` (una activa por empleado/fecha/turno, nunca se borran), `operational_reports`, `operational_extras`, `sessions`, `login_attempts`, `audit_logs` (inmutable), `schema_migrations`.

@@ -12,8 +12,9 @@ import { AppError } from "../errors";
 import { getLocalParts, lastAllowedSecond, timeToSeconds, windowState, type WindowState } from "../time";
 import { logAudit } from "./audit";
 import type { SessionEmployee, SessionUser } from "./auth";
-import { getShifts, type Shift } from "./catalog";
-import { getEffectiveShiftId } from "./rol";
+import type { Shift } from "./catalog";
+import { END_OF_DAY, getEffectiveShifts } from "./windows";
+import { getEffectiveShiftId, getPlacement } from "./rol";
 
 export type RegMode = "NORMAL" | "EXTENSION" | "LATE_NOTICE";
 
@@ -49,7 +50,7 @@ export interface LateNoticeInfo { eta: string; reason: string; createdAt: string
 export async function getExtension(employeeId: number, date: string, shiftId: number, client?: Queryable): Promise<ExtensionInfo | null> {
   const r = await queryOne<{ close_time: string; granted_by_label: string; created_at: Date }>(
     `SELECT close_time, granted_by_label, created_at FROM attendance_extensions
-     WHERE employee_id = $1 AND operational_date = $2 AND shift_id = $3`, [employeeId, date, shiftId], client);
+     WHERE employee_id = $1 AND operational_date = $2 AND shift_id = $3 AND revoked_at IS NULL`, [employeeId, date, shiftId], client);
   return r ? { closeTime: r.close_time, grantedBy: r.granted_by_label, createdAt: r.created_at.toISOString() } : null;
 }
 
@@ -76,8 +77,8 @@ export async function createLateNotice(
   if (!/^\d{2}:\d{2}(:\d{2})?$/.test(eta)) throw new AppError(400, "BAD_ETA", "Indica a qué hora aproximada llegarás.");
   const etaFull = eta.length === 5 ? `${eta}:00` : eta;
 
-  const shifts = await getShifts();
   const local = getLocalParts(now);
+  const shifts = await getEffectiveShifts(local.date);
   const shiftId = await getEffectiveShiftId(employee.id, local.date);
   const myShift = shifts.find((s) => s.id === shiftId)!;
   const state = windowState(now, myShift, local.date);
@@ -124,8 +125,8 @@ export async function grantExtensions(
   if (actor.type === "LEADER" && (actor.employee.role !== "LEADER" || actor.employee.departmentId == null)) {
     throw new AppError(403, "FORBIDDEN", "Solo los líderes pueden abrir el registro desde su panel.");
   }
-  const shifts = await getShifts();
   const today = getLocalParts(now).date;
+  const shifts = await getEffectiveShifts(today);
   const label = actor.type === "USER" ? actor.user.displayName : `${actor.employee.fullName} (líder)`;
 
   return withTransaction(async (client) => {
@@ -136,45 +137,73 @@ export async function grantExtensions(
       const emp = await queryOne<{ id: number; full_name: string; department_id: number | null; active: boolean }>(
         `SELECT id, full_name, department_id, active FROM employees WHERE id = $1`, [Number(rawId)], client);
       if (!emp || !emp.active) { skipped.push({ name: `#${rawId}`, reason: "no encontrado" }); continue; }
-      if (actor.type === "LEADER" && emp.department_id !== actor.employee.departmentId) {
-        throw new AppError(403, "FORBIDDEN", "Solo puedes abrir el registro a personas de tu área.");
+      if (actor.type === "LEADER") {
+        const [a, b] = [await getPlacement(emp.id, today, client), await getPlacement(actor.employee.id, today, client)];
+        if (a.departmentId !== b.departmentId) throw new AppError(403, "FORBIDDEN", "Solo puedes abrir el registro a personas de tu área.");
       }
       const shiftId = await getEffectiveShiftId(emp.id, today, client);
       const sh = shifts.find((s) => s.id === shiftId)!;
       const local = getLocalParts(now);
       if (local.seconds < timeToSeconds(sh.openTime)) { skipped.push({ name: emp.full_name, reason: "su turno aún no abre" }); continue; }
-      if (local.seconds >= timeToSeconds(sh.extensionClose)) {
-        skipped.push({ name: emp.full_name, reason: `ya pasó la hora límite de extensión (${sh.extensionClose.slice(0, 5)})` });
-        continue;
-      }
       const att = await queryOne<{ id: number }>(
         `SELECT id FROM attendance WHERE employee_id = $1 AND operational_date = $2`, [emp.id, today], client);
       if (att) { skipped.push({ name: emp.full_name, reason: "ya registró" }); continue; }
       const ins = await queryOne<{ id: number }>(
         `INSERT INTO attendance_extensions (employee_id, shift_id, operational_date, close_time, granted_by_user, granted_by_employee, granted_by_label, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT ON CONSTRAINT attendance_extensions_unique DO NOTHING RETURNING id`,
-        [emp.id, sh.id, today, sh.extensionClose,
+         ON CONFLICT ON CONSTRAINT attendance_extensions_unique DO UPDATE
+           SET revoked_at = NULL, revoked_by_label = NULL, granted_by_user = EXCLUDED.granted_by_user,
+               granted_by_employee = EXCLUDED.granted_by_employee, granted_by_label = EXCLUDED.granted_by_label,
+               created_at = EXCLUDED.created_at, close_time = EXCLUDED.close_time
+           WHERE attendance_extensions.revoked_at IS NOT NULL
+         RETURNING id`,
+        [emp.id, sh.id, today, END_OF_DAY,
           actor.type === "USER" ? actor.user.id : null, actor.type === "LEADER" ? actor.employee.id : null, label, now],
         client,
       );
-      if (!ins) { skipped.push({ name: emp.full_name, reason: "ya tenía extensión" }); continue; }
+      if (!ins) { skipped.push({ name: emp.full_name, reason: "ya tenía el registro abierto" }); continue; }
       granted.push(emp.full_name);
-      until[emp.full_name] = sh.extensionClose;
+      until[emp.full_name] = END_OF_DAY;
       await logAudit({
         actorType: actor.type === "USER" ? "USER" : "EMPLOYEE",
         actorId: actor.type === "USER" ? actor.user.id : actor.employee.id,
         actorLabel: label, action: "EXTENSION_GRANTED", entity: "employee", entityId: emp.id,
-        details: { employee: emp.full_name, date: today, shift: sh.code, until: sh.extensionClose }, ip,
+        details: { employee: emp.full_name, date: today, shift: sh.code }, ip,
       }, client);
     }
     return { granted, skipped, until };
   });
 }
 
+/** Cierra el registro que se había abierto a una persona (supervisor, o líder de su área). */
+export async function revokeExtension(employeeId: number, actor: ExtensionActor, ip: string, now: Date): Promise<void> {
+  const today = getLocalParts(now).date;
+  const emp = await queryOne<{ id: number; full_name: string; department_id: number | null }>(
+    `SELECT id, full_name, department_id FROM employees WHERE id = $1`, [employeeId]);
+  if (!emp) throw new AppError(404, "NOT_FOUND", "Empleado no encontrado.");
+  if (actor.type === "LEADER") {
+    const [a, b] = [await getPlacement(emp.id, today), await getPlacement(actor.employee.id, today)];
+    if (actor.employee.role !== "LEADER" || a.departmentId !== b.departmentId) {
+      throw new AppError(403, "FORBIDDEN", "Solo puedes cerrar el registro de personas de tu área.");
+    }
+  }
+  const label = actor.type === "USER" ? actor.user.displayName : `${actor.employee.fullName} (líder)`;
+  const row = await queryOne<{ id: number }>(
+    `UPDATE attendance_extensions SET revoked_at = $3, revoked_by_label = $4
+     WHERE employee_id = $1 AND operational_date = $2 AND revoked_at IS NULL RETURNING id`,
+    [employeeId, today, now, label]);
+  if (!row) throw new AppError(404, "NOT_FOUND", "Esa persona no tiene el registro abierto.");
+  await logAudit({
+    actorType: actor.type === "USER" ? "USER" : "EMPLOYEE",
+    actorId: actor.type === "USER" ? actor.user.id : actor.employee.id,
+    actorLabel: label, action: "EXTENSION_REVOKED", entity: "employee", entityId: employeeId,
+    details: { employee: emp.full_name, date: today }, ip,
+  });
+}
+
 export async function listExtensionsAndNotices(date: string) {
   const ext = await query<{ employee_id: number; shift_id: number; close_time: string; granted_by_label: string }>(
-    `SELECT employee_id, shift_id, close_time, granted_by_label FROM attendance_extensions WHERE operational_date = $1`, [date]);
+    `SELECT employee_id, shift_id, close_time, granted_by_label FROM attendance_extensions WHERE operational_date = $1 AND revoked_at IS NULL`, [date]);
   const late = await query<{ employee_id: number; shift_id: number; eta: string; reason: string }>(
     `SELECT employee_id, shift_id, eta, reason FROM late_notices WHERE operational_date = $1`, [date]);
   return { ext, late };

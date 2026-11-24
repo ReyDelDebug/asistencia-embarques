@@ -31,7 +31,14 @@ function secondsToTime(s: number) {
 }
 
 /** Abre la ventana del turno indicado alrededor de la hora actual y cierra la del otro. */
+/** Las pruebas por HTTP usan la fecha real: se marca hoy como laborable para no depender del día de la semana. */
+async function todayLaboral() {
+  await query(`INSERT INTO work_calendar (day, day_type, label) VALUES ($1, 'LABORAL', 'pruebas')
+               ON CONFLICT (day) DO UPDATE SET day_type = 'LABORAL'`, [getLocalParts(new Date()).date]);
+}
+
 async function openWindowNow(code: "DIA" | "NOCHE") {
+  await todayLaboral();
   const sec = getLocalParts(new Date()).seconds;
   await query(`UPDATE shifts SET open_time = '00:00:00', close_time = '00:00:01'`);
   await query(`UPDATE shifts SET open_time = $2, close_time = $3 WHERE code = $1`,
@@ -39,6 +46,7 @@ async function openWindowNow(code: "DIA" | "NOCHE") {
 }
 /** Ventana normal ya cerrada, pero dentro de la extensión y del límite de retardo. */
 async function afterCloseNow(code: "DIA" | "NOCHE") {
+  await todayLaboral();
   const sec = getLocalParts(new Date()).seconds;
   await query(`UPDATE shifts SET open_time = '00:00:00', close_time = '00:00:01'`);
   await query(`UPDATE shifts SET open_time = $2, close_time = $3, extension_close = $4, late_limit = $5 WHERE code = $1`,
@@ -242,7 +250,11 @@ describe("API por HTTP", () => {
     const view = await (await emp.req("/api/attendance")).json();
     expect(view.shift.code).toBe("DIA");
 
-    const tomorrow = new Date(Date.now() + 86_400_000 * 3).toISOString().slice(0, 10);
+    // Próximo día laborable (lunes a jueves) dentro de 2+ días
+    let tomorrow = getLocalParts(new Date(Date.now() + 86_400_000 * 2)).date;
+    while (![1, 2, 3, 4].includes(new Date(`${tomorrow}T12:00:00Z`).getUTCDay())) {
+      tomorrow = new Date(new Date(`${tomorrow}T12:00:00Z`).getTime() + 86_400_000).toISOString().slice(0, 10);
+    }
     const lr = await emp.req("/api/leave", { method: "POST", json: { type: "PSG", startDate: tomorrow, endDate: tomorrow, reason: "Trámite" } });
     expect(lr.status).toBe(201);
     const pending = await (await adm.req("/api/admin/leave?status=PENDIENTE")).json();
@@ -358,6 +370,67 @@ describe("API por HTTP", () => {
     expect(await sw.text()).toContain("showNotification");
     const manifest = await (await fetch(`${BASE}/manifest.webmanifest`)).json();
     expect(manifest.display).toBe("standalone");
+  });
+
+  it("perfil del trabajador, ficha del supervisor, control del registro y asistencia del supervisor", async () => {
+    // El trabajador completa su perfil
+    const emp = new Client();
+    await emp.req("/api/auth/employee/login", { method: "POST", json: { employeeNumber: "1015", pin: pinOf(S, "Isaac Antonio") } });
+    const bad = await emp.req("/api/me/profile", { method: "PUT", json: { fullName: "Isaac 123", phone: "4421112233", birthDate: "1995-02-03", bootSize: 27, vestSize: "MEDIANO" } });
+    expect(bad.status).toBe(400);
+    const ok = await emp.req("/api/me/profile", { method: "PUT", json: { fullName: "Isaac Antonio Pérez", phone: "4421112233", birthDate: "1995-02-03", bootSize: 27, vestSize: "MEDIANO" } });
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).profile.complete).toBe(true);
+
+    // El supervisor ve la ficha y le asigna vacaciones
+    const adm = new Client();
+    await adm.req("/api/auth/admin/login", { method: "POST", json: { username: "manuel", password: S.admin.password } });
+    const me = await (await emp.req("/api/attendance")).json();
+    const put = await adm.req(`/api/admin/employees/${me.employee.id}/details`, { method: "PUT", json: { vacationDays: 12 } });
+    expect(put.status).toBe(200);
+    const detail = await (await adm.req(`/api/admin/employees/${me.employee.id}/detail`)).json();
+    expect(detail.employee).toMatchObject({ fullName: "Isaac Antonio Pérez", phone: "4421112233", bootSize: 27, vestSize: "MEDIANO" });
+    expect(detail.vacations).toMatchObject({ assigned: 12, available: 12 });
+    const prof = await (await emp.req("/api/me/profile")).json();
+    expect(prof.vacations.available).toBe(12);
+    // Un empleado no puede ver fichas ni cambiar el horario
+    expect((await emp.req(`/api/admin/employees/${me.employee.id}/detail`)).status).toBe(401);
+    expect((await emp.req("/api/admin/windows", { method: "POST", json: { shift: "DIA", action: "OPEN" } })).status).toBe(401);
+
+    // Control del registro: cerrar y abrir para todos
+    await openWindowNow("DIA");
+    let r = await (await adm.req("/api/admin/windows", { method: "POST", json: { shift: "DIA", action: "CLOSE" } })).json();
+    expect(r.windows.find((w: { code: string }) => w.code === "DIA").open).toBe(false);
+    const sup = await (await adm.req("/api/admin/me/attendance")).json();
+    expect(sup).toMatchObject({ linked: true, view: { windowState: "CLOSED" } });
+    r = await (await adm.req("/api/admin/windows", { method: "POST", json: { shift: "DIA", action: "OPEN" } })).json();
+    expect(r.windows.find((w: { code: string }) => w.code === "DIA")).toMatchObject({ open: true, closeTime: "23:59:59" });
+    // El supervisor registra su asistencia desde el panel
+    const mine = await adm.req("/api/admin/me/attendance", { method: "POST" });
+    expect(mine.status).toBe(201);
+    expect((await mine.json()).record.employeeName).toBe("Manuel");
+    await adm.req("/api/admin/windows", { method: "POST", json: { shift: "DIA", action: "RESET" } });
+  });
+
+  it("calendario laboral y cambio de área por HTTP", async () => {
+    const adm = new Client();
+    await adm.req("/api/auth/admin/login", { method: "POST", json: { username: "manuel", password: S.admin.password } });
+    const cal = await (await adm.req("/api/admin/calendar?month=2026-12")).json();
+    expect(cal.days.find((d: { date: string }) => d.date === "2026-12-25")).toMatchObject({ type: "FERIADO", label: "Navidad" });
+    expect(cal.days.find((d: { date: string }) => d.date === "2026-12-04")).toMatchObject({ type: "VIERNES" });
+    const put = await adm.req("/api/admin/calendar", { method: "PUT", json: { date: "2026-12-04", type: "NO_LABORAL", label: "Puente" } });
+    expect((await put.json()).day).toMatchObject({ type: "NO_LABORAL", custom: true });
+
+    const rol = await (await adm.req("/api/admin/rol")).json();
+    const gus = rol.rows.find((r: { fullName: string }) => r.fullName === "Gustavo Mata");
+    const central = rol.departments.find((d: { code: string }) => d.code === "CENTRAL");
+    const ch = await adm.req("/api/admin/rol/area", { method: "POST", json: {
+      employeeId: gus.employeeId, shiftCode: "NOCHE", departmentId: central.id, effectiveFrom: rol.today, endDate: rol.today,
+    } });
+    expect((await ch.json()).temporary).toBe(true);
+    const after = await (await adm.req("/api/admin/rol")).json();
+    expect(after.rows.find((r: { fullName: string }) => r.fullName === "Gustavo Mata")).toMatchObject({ departmentName: "Central", support: true, temporary: true });
+    expect((await adm.req("/api/admin/rol/area/end", { method: "POST", json: { employeeId: gus.employeeId } })).status).toBe(200);
   });
 
   it("encabezados de seguridad", async () => {
@@ -558,6 +631,10 @@ describe("20. Funcionamiento desde celular (Chrome con emulación)", () => {
     await page.waitForFunction(() => document.body.innerText.includes("BUENOS DÍAS ASISTENCIA"));
     await page.screenshot({ path: `${SHOTS}/reporte-escritorio.png`, fullPage: true });
 
+    await page.goto(`${BASE}/admin/calendario`, { waitUntil: "networkidle0" });
+    await page.waitForFunction(() => document.body.innerText.includes("Calendario laboral"));
+    await page.screenshot({ path: `${SHOTS}/calendario-escritorio.png`, fullPage: true });
+
     await page.goto(`${BASE}/admin/rol`, { waitUntil: "networkidle0" });
     await page.waitForFunction(() => document.body.innerText.includes("Enrique González"));
     await page.screenshot({ path: `${SHOTS}/rol-escritorio.png`, fullPage: true });
@@ -569,6 +646,10 @@ describe("20. Funcionamiento desde celular (Chrome con emulación)", () => {
     await page.goto(`${BASE}/admin/empleados`, { waitUntil: "networkidle0" });
     await page.waitForFunction(() => document.body.innerText.includes("Isaías Romero"));
     await page.screenshot({ path: `${SHOTS}/empleados-escritorio.png` });
+    const ficha = await page.waitForSelector("xpath/.//button[contains(., 'Isaac Antonio')]");
+    await ficha!.click();
+    await page.waitForFunction(() => document.body.innerText.includes("Faltas por semana"));
+    await page.screenshot({ path: `${SHOTS}/ficha-escritorio.png` });
     await ctx.close();
   });
 });

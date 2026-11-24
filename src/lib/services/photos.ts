@@ -8,6 +8,7 @@ import { query, queryOne } from "../db";
 import { AppError } from "../errors";
 import { logAudit } from "./audit";
 import type { SessionEmployee, SessionUser } from "./auth";
+import { getLocalParts } from "../time";
 
 export const MAX_PHOTO_BYTES = 300 * 1024;
 
@@ -69,16 +70,18 @@ export async function getPhotoFor(
   targetId: number,
   viewer: { type: "EMPLOYEE"; employee: SessionEmployee } | { type: "USER" },
 ): Promise<{ data: Buffer; contentType: string; updatedAt: Date } | null> {
-  const row = await queryOne<{ data: Buffer; content_type: string; updated_at: Date; department_id: number | null; active: boolean }>(
-    `SELECT p.data, p.content_type, p.updated_at, e.department_id, e.active
+  const today = getLocalParts(new Date()).date;
+  const row = await queryOne<{ data: Buffer; content_type: string; updated_at: Date; department_id: number | null; active: boolean; viewer_dept: number | null }>(
+    `SELECT p.data, p.content_type, p.updated_at, (SELECT department_id FROM employee_placement_on(e.id, $2)) AS department_id, e.active,
+            (SELECT department_id FROM employee_placement_on($3, $2)) AS viewer_dept
      FROM employee_photos p JOIN employees e ON e.id = p.employee_id WHERE p.employee_id = $1`,
-    [targetId],
+    [targetId, today, viewer.type === "EMPLOYEE" ? viewer.employee.id : 0],
   );
   if (!row) return null;
   if (viewer.type === "USER") return { data: row.data, contentType: row.content_type, updatedAt: row.updated_at };
   const me = viewer.employee;
   const allowed = me.id === targetId
-    || (row.active && me.departmentId != null && row.department_id === me.departmentId);
+    || (row.active && row.viewer_dept != null && row.department_id === row.viewer_dept);
   return allowed ? { data: row.data, contentType: row.content_type, updatedAt: row.updated_at } : null;
 }
 

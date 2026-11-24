@@ -13,10 +13,13 @@ import {
 import { buildAttendanceWorkbook } from "../src/lib/services/excel";
 import { createEmployee, resetEmployeePin, terminateEmployee, updateEmployee } from "../src/lib/services/employees";
 import { cancelMyLeaveRequest, createLeaveRequest, decideLeaveRequest, listLeaveRequests } from "../src/lib/services/leave";
-import { getRol, mondayOf, saveRol } from "../src/lib/services/rol";
+import { changeArea, endSupport, getPlacement, getRol, mondayOf, saveRol } from "../src/lib/services/rol";
+import { getDayInfo, lftHolidays, resetCalendarDay, setCalendarDay } from "../src/lib/services/calendar";
 import { decodeImage, deleteEmployeePhoto, getPhotoFor, setEmployeePhoto } from "../src/lib/services/photos";
 import { getMyGroup } from "../src/lib/services/group";
-import { createLateNotice, grantExtensions } from "../src/lib/services/registration";
+import { createLateNotice, grantExtensions, revokeExtension } from "../src/lib/services/registration";
+import { getWindowStatus, setWindow } from "../src/lib/services/windows";
+import { getEmployeeDetail, getProfile, getVacationSummary, updateEmployeeDetailsByAdmin, updateMyProfile } from "../src/lib/services/profile";
 import { saveSubscription, sendReminders, sendTestNotification, type PushSender } from "../src/lib/services/push";
 import { revokeIncident, setIncident } from "../src/lib/services/incidents";
 import { buildReport, saveOperationalData } from "../src/lib/services/report";
@@ -124,24 +127,24 @@ describe("3–9. Restricción de horarios", () => {
     expect(r.operationalDate).toBe(D1);
     expect(r.confirmedAt).toBe(mx(`${D1}T05:00:00`).toISOString());
   });
-  it("5. registro a las 07:19:59 -> aceptado", async () => {
-    const r = await confirmAt("Julio César", `${D1}T07:19:59`);
-    expect(r.confirmedAt).toBe(mx(`${D1}T07:19:59`).toISOString());
+  it("5. registro a las 07:59:59 -> aceptado", async () => {
+    const r = await confirmAt("Julio César", `${D1}T07:59:59`);
+    expect(r.confirmedAt).toBe(mx(`${D1}T07:59:59`).toISOString());
   });
-  it("6. registro a las 07:20:00 -> cerrado", async () => {
-    await expect(confirmAt("Maximiliano", `${D1}T07:20:00`)).rejects.toMatchObject({ status: 403, code: "REGISTRATION_CLOSED" });
+  it("6. registro a las 08:00:00 -> cerrado", async () => {
+    await expect(confirmAt("Maximiliano", `${D1}T08:00:00`)).rejects.toMatchObject({ status: 403, code: "REGISTRATION_CLOSED" });
   });
   it("7. noche a las 17:00:00 -> aceptado", async () => {
     const r = await confirmAt("Enrique González", `${D1}T17:00:00`);
     expect(r.shiftCode).toBe("NOCHE");
     expect(r.operationalDate).toBe(D1);
   });
-  it("8. noche a las 19:19:59 -> aceptado", async () => {
-    const r = await confirmAt("Javier Ángeles", `${D1}T19:19:59`);
-    expect(r.confirmedAt).toBe(mx(`${D1}T19:19:59`).toISOString());
+  it("8. noche a las 19:59:59 -> aceptado", async () => {
+    const r = await confirmAt("Javier Ángeles", `${D1}T19:59:59`);
+    expect(r.confirmedAt).toBe(mx(`${D1}T19:59:59`).toISOString());
   });
-  it("9. noche a las 19:20:00 -> cerrado", async () => {
-    await expect(confirmAt("Gregorio Meraz", `${D1}T19:20:00`)).rejects.toMatchObject({ status: 403, code: "REGISTRATION_CLOSED" });
+  it("9. noche a las 20:00:00 -> cerrado", async () => {
+    await expect(confirmAt("Gregorio Meraz", `${D1}T20:00:00`)).rejects.toMatchObject({ status: 403, code: "REGISTRATION_CLOSED" });
   });
 });
 
@@ -495,16 +498,16 @@ describe("Rol de turno (semanal, vigente hasta que se cambie)", () => {
   });
 });
 
-describe("Falta automática al cerrar el registro (07:20) y en el Excel", () => {
+describe("Falta automática al cerrar el registro (08:00) y en el Excel", () => {
   const D = "2026-12-02";
-  it("07:19:59 pendiente; 07:20:00 falta", async () => {
+  it("07:59:59 pendiente; 08:00:00 falta", async () => {
     const at = async (t: string) => (await getRoster({ date: D, shiftId: 1 }, mx(`${D}T${t}`))).find((r) => r.fullName === "Antonio Rosado")!.status;
-    expect(await at("07:19:59")).toBe("PENDIENTE");
-    expect(await at("07:20:00")).toBe("FALTA");
+    expect(await at("07:59:59")).toBe("PENDIENTE");
+    expect(await at("08:00:00")).toBe("FALTA");
   });
 
-  it("el Excel exporta como Falta a quien no registró antes de las 07:20", async () => {
-    const { buffer } = await buildAttendanceWorkbook({ from: D, to: D, shiftId: 1 }, mx(`${D}T07:20:00`));
+  it("el Excel exporta como Falta a quien no registró antes de las 08:00", async () => {
+    const { buffer } = await buildAttendanceWorkbook({ from: D, to: D, shiftId: 1 }, mx(`${D}T08:00:00`));
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buffer as unknown as ArrayBuffer);
     const ws = wb.getWorksheet("ASISTENCIA GENERAL")!;
@@ -522,8 +525,17 @@ describe("Solicitudes de vacaciones / PSG", () => {
     return (await loginEmployee({ employeeNumber: e.employee_number, pin: TEST_PIN }, meta(now, "10.3.3.3"))).employee;
   };
 
-  it("el trabajador solicita; se validan fechas y traslapes", async () => {
+  it("el trabajador solicita; se validan fechas, días disponibles y traslapes", async () => {
     const jc = await sessionOf("Jonathan Cruz");
+    await expect(createLeaveRequest(jc, { type: "VACACIONES", startDate: "2026-12-14", endDate: "2026-12-16" }, "ip", now))
+      .rejects.toMatchObject({ code: "NO_VACATION_DAYS" });
+    await updateEmployeeDetailsByAdmin(jc.id, { vacationDays: 4, vacationPeriodStart: "2026-01-01" }, admin, "ip", now);
+    // 14 al 21: lunes a jueves + lunes 21 = 5 días laborables (> 4 asignados)
+    await expect(createLeaveRequest(jc, { type: "VACACIONES", startDate: "2026-12-14", endDate: "2026-12-21" }, "ip", now))
+      .rejects.toMatchObject({ code: "NOT_ENOUGH_DAYS" });
+    // Solo fin de semana: no hay días laborables
+    await expect(createLeaveRequest(jc, { type: "PSG", startDate: "2026-12-19", endDate: "2026-12-20" }, "ip", now))
+      .rejects.toMatchObject({ code: "NO_WORK_DAYS" });
     await expect(createLeaveRequest(jc, { type: "VACACIONES", startDate: "2026-11-30", endDate: "2026-12-02" }, "ip", now))
       .rejects.toMatchObject({ code: "PAST_DATE" });
     await expect(createLeaveRequest(jc, { type: "VACACIONES", startDate: "2026-12-10", endDate: "2027-02-10" }, "ip", now))
@@ -549,6 +561,8 @@ describe("Solicitudes de vacaciones / PSG", () => {
       const rows = await getRoster({ date: d, shiftId: 1 }, mx(`${d}T09:00:00`));
       expect(rows.find((x) => x.fullName === "Jonathan Cruz")!.status).toBe("VACACIONES");
     }
+    const vac = await getVacationSummary((await employeeByName("Jonathan Cruz")).id, now);
+    expect(vac).toMatchObject({ assigned: 4, used: 3, available: 1, pending: 0 });
     const rows17 = await getRoster({ date: "2026-12-17", shiftId: 1 }, mx("2026-12-17T09:00:00"));
     expect(rows17.find((x) => x.fullName === "Jonathan Cruz")!.status).toBe("FALTA");
   });
@@ -567,14 +581,14 @@ describe("Solicitudes de vacaciones / PSG", () => {
 
   it("PSG: el trabajador puede cancelar mientras está pendiente; el rechazo no registra días", async () => {
     const mc = await sessionOf("Miguel Cruz");
-    const a = await createLeaveRequest(mc, { type: "PSG", startDate: "2026-12-18", endDate: "2026-12-18" }, "ip", now);
+    const a = await createLeaveRequest(mc, { type: "PSG", startDate: "2026-12-22", endDate: "2026-12-22" }, "ip", now);
     await cancelMyLeaveRequest(mc, a.id, "ip");
-    const b = await createLeaveRequest(mc, { type: "PSG", startDate: "2026-12-18", endDate: "2026-12-18" }, "ip", now);
+    const b = await createLeaveRequest(mc, { type: "PSG", startDate: "2026-12-22", endDate: "2026-12-22" }, "ip", now);
     const r = await decideLeaveRequest(b.id, "RECHAZAR", "Día de inventario", admin, "1.1.1.1", now);
     expect(r).toMatchObject({ status: "RECHAZADA", daysRegistered: 0 });
-    const c = await createLeaveRequest(mc, { type: "PSG", startDate: "2026-12-19", endDate: "2026-12-19" }, "ip", now);
+    const c = await createLeaveRequest(mc, { type: "PSG", startDate: "2026-12-23", endDate: "2026-12-23" }, "ip", now);
     await decideLeaveRequest(c.id, "APROBAR", "", admin, "1.1.1.1", now);
-    const rep = await buildReport("2026-12-19", "DIA", mx("2026-12-19T09:00:00"));
+    const rep = await buildReport("2026-12-23", "DIA", mx("2026-12-23T09:00:00"));
     expect(rep.lists.PSG).toEqual(["Miguel Cruz (LAVADORAS)"]);
   });
 });
@@ -607,14 +621,14 @@ describe("Subárea PT dentro de Central (dos líderes en Central)", () => {
 });
 
 describe("Turno de noche: registro desde la vista del empleado", () => {
-  it("un empleado de noche ve el registro ABIERTO de 17:00 a 19:19:59 y puede confirmar", async () => {
+  it("un empleado de noche ve el registro ABIERTO de 17:00 a 19:59:59 y puede confirmar", async () => {
     const e = await employeeByName("José Pinet");
     const login = await loginEmployee({ employeeNumber: e.employee_number, pin: TEST_PIN }, meta(mx("2026-12-04T17:05:00"), "10.2.2.2"));
     expect((await getAttendanceView(login.employee, mx("2026-12-04T16:59:59"))).windowState).toBe("BEFORE");
     const open = await getAttendanceView(login.employee, mx("2026-12-04T17:00:00"));
-    expect(open).toMatchObject({ windowState: "OPEN", shift: { code: "NOCHE", lastAllowed: "19:19:59" } });
-    expect((await getAttendanceView(login.employee, mx("2026-12-04T19:20:00"))).windowState).toBe("CLOSED");
-    const r = await confirmAttendance(e.id, meta(mx("2026-12-04T19:19:59")));
+    expect(open).toMatchObject({ windowState: "OPEN", shift: { code: "NOCHE", lastAllowed: "19:59:59" } });
+    expect((await getAttendanceView(login.employee, mx("2026-12-04T20:00:00"))).windowState).toBe("CLOSED");
+    const r = await confirmAttendance(e.id, meta(mx("2026-12-04T19:59:59")));
     expect(r).toMatchObject({ shiftCode: "NOCHE", operationalDate: "2026-12-04" });
     // Después de las 19:20 y en la madrugada sigue viendo su registro de la noche
     expect((await getAttendanceView(login.employee, mx("2026-12-05T02:00:00"))).existing?.operationalDate).toBe("2026-12-04");
@@ -709,57 +723,91 @@ describe("Mi grupo: cada quien ve solo a su área", () => {
   });
 });
 
-describe("Extensión del registro hasta 7:30 (supervisor y líder)", () => {
+describe("Abrir el registro a una persona (supervisor y líder)", () => {
   const D = "2026-12-09";
   it("el líder abre el registro solo a personas de su área; un empleado no puede", async () => {
-    await expect(confirmAt("Arturo Martínez", `${D}T07:22:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    await expect(confirmAt("Arturo Martínez", `${D}T08:02:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
     const isaias = await sessionAt("Isaías Romero");
     const gm = await sessionAt("Gerardo Marroquín", "731904");
     const normal = await sessionAt("Alexis Altamirano");
     const arturo = await employeeByName("Arturo Martínez");
-    await expect(grantExtensions([arturo.id], { type: "LEADER", employee: gm }, "ip", mx(`${D}T07:22:00`)))
+    await expect(grantExtensions([arturo.id], { type: "LEADER", employee: gm }, "ip", mx(`${D}T08:02:00`)))
       .rejects.toMatchObject({ status: 403 });
-    await expect(grantExtensions([arturo.id], { type: "LEADER", employee: normal }, "ip", mx(`${D}T07:22:00`)))
+    await expect(grantExtensions([arturo.id], { type: "LEADER", employee: normal }, "ip", mx(`${D}T08:02:00`)))
       .rejects.toMatchObject({ status: 403 });
-    const r = await grantExtensions([arturo.id], { type: "LEADER", employee: isaias }, "ip", mx(`${D}T07:22:00`));
+    const before = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T08:02:00`));
+    expect(before.find((x) => x.fullName === "Arturo Martínez")).toMatchObject({ status: "FALTA", canExtend: true });
+    const r = await grantExtensions([arturo.id], { type: "LEADER", employee: isaias }, "ip", mx(`${D}T08:02:00`));
     expect(r.granted).toEqual(["Arturo Martínez"]);
-    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T07:25:00`));
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T08:25:00`));
     expect(rows.find((x) => x.fullName === "Arturo Martínez")).toMatchObject({
-      status: "PENDIENTE", extensionUntil: "07:30:00", canExtend: false, extensionBy: "Isaías Romero (líder)",
+      status: "PENDIENTE", canExtend: false, extensionBy: "Isaías Romero (líder)",
     });
-    const c = await confirmAt("Arturo Martínez", `${D}T07:29:59`);
+    // Sigue abierto para él hasta que lo cierren (aunque sea más tarde)
+    const c = await confirmAt("Arturo Martínez", `${D}T10:15:00`);
     expect(c.via).toBe("EXTENSION");
   });
 
-  it("el supervisor abre a varios; a las 7:30 vence y quien no registró queda en falta", async () => {
+  it("el supervisor abre a varios y puede volver a cerrarlo; sin registro queda en falta", async () => {
     const maxi = await employeeByName("Maximiliano");
     const moises = await employeeByName("Moisés Muñoz");
-    const r = await grantExtensions([maxi.id, moises.id], { type: "USER", user: admin }, "ip", mx(`${D}T07:25:00`));
+    const r = await grantExtensions([maxi.id, moises.id], { type: "USER", user: admin }, "ip", mx(`${D}T08:05:00`));
     expect(r.granted.sort()).toEqual(["Maximiliano", "Moisés Muñoz"]);
-    await confirmAt("Moisés Muñoz", `${D}T07:27:00`);
-    await expect(confirmAt("Maximiliano", `${D}T07:30:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
-    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T07:30:00`));
-    expect(rows.find((x) => x.fullName === "Maximiliano")!.status).toBe("FALTA");
-    const late = await grantExtensions([(await employeeByName("Manuel Cruz")).id], { type: "USER", user: admin }, "ip", mx(`${D}T07:30:00`));
-    expect(late.granted).toHaveLength(0);
-    expect(late.skipped[0].reason).toMatch(/hora límite/);
+    await confirmAt("Moisés Muñoz", `${D}T08:27:00`);
+    await revokeExtension(maxi.id, { type: "USER", user: admin }, "ip", mx(`${D}T08:40:00`));
+    await expect(confirmAt("Maximiliano", `${D}T08:41:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T08:41:00`));
+    expect(rows.find((x) => x.fullName === "Maximiliano")).toMatchObject({ status: "FALTA", canExtend: true });
+    // un líder de otra área no puede cerrarlo
+    await expect(revokeExtension(moises.id, { type: "LEADER", employee: await sessionAt("Gerardo Marroquín", "731904") }, "ip", mx(`${D}T08:42:00`)))
+      .rejects.toMatchObject({ status: 403 });
   });
 
   it("aparece en el reporte (RETARDO) y en el Excel como 'Confirmado (retardo)'", async () => {
-    const rep = await buildReport(D, "DIA", mx(`${D}T08:00:00`));
+    const rep = await buildReport(D, "DIA", mx(`${D}T11:00:00`));
     expect(rep.text).toContain("*RETARDO:*\n- ");
     expect(rep.lists.RETARDO.sort()).toEqual([
-      "Arturo Martínez (CENTRAL) · llegó 07:29 (con extensión)",
-      "Moisés Muñoz (CENTRAL) · llegó 07:27 (con extensión)",
+      "Arturo Martínez (CENTRAL) · llegó 10:15 (con extensión)",
+      "Moisés Muñoz (CENTRAL) · llegó 08:27 (con extensión)",
     ]);
     expect(rep.departments.find((d) => d.label === "CENTRAL")!.employees).toBe(2); // sí cuentan como presentes
-    const { buffer } = await buildAttendanceWorkbook({ from: D, to: D, shiftId: 1 }, mx(`${D}T08:00:00`));
+    const { buffer } = await buildAttendanceWorkbook({ from: D, to: D, shiftId: 1 }, mx(`${D}T11:00:00`));
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buffer as unknown as ArrayBuffer);
     const ws = wb.getWorksheet("ASISTENCIA GENERAL")!;
     const row = ws.getRows(5, ws.rowCount - 4)!.find((x) => x.getCell(2).value === "Arturo Martínez")!;
     expect(row.getCell(8).value).toBe("Confirmado (retardo)");
-    expect(String(row.getCell(9).value)).toContain("extensión hasta 07:30");
+    expect(String(row.getCell(9).value)).toContain("registro abierto por Isaías Romero");
+  });
+});
+
+describe("Apertura y cierre manual del registro por el supervisor", () => {
+  const D = "2026-12-22";
+  it("cerrar antes de las 8:00", async () => {
+    await setWindow("DIA", "CLOSE", admin, "ip", mx(`${D}T07:10:00`));
+    await expect(confirmAt("Carlos González", `${D}T07:11:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    const st = await getWindowStatus(mx(`${D}T07:11:00`));
+    expect(st.find((w) => w.code === "DIA")).toMatchObject({ open: false, closeTime: "07:10:00" });
+    // quien no registró ya cuenta como falta
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T07:11:00`));
+    expect(rows.find((x) => x.fullName === "Carlos González")!.status).toBe("FALTA");
+  });
+
+  it("abrir para todos después de las 8:00 y cerrarlo cuando quiera", async () => {
+    await setWindow("DIA", "OPEN", admin, "ip", mx(`${D}T09:30:00`));
+    expect((await getWindowStatus(mx(`${D}T13:00:00`))).find((w) => w.code === "DIA")).toMatchObject({ open: true, closeTime: "23:59:59" });
+    const c = await confirmAt("Carlos González", `${D}T13:00:00`);
+    expect(c.via).toBe("NORMAL");
+    await setWindow("DIA", "CLOSE", admin, "ip", mx(`${D}T14:00:00`));
+    await expect(confirmAt("Gustavo Mata", `${D}T14:00:01`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    await setWindow("DIA", "RESET", admin, "ip", mx(`${D}T14:05:00`));
+    expect((await getWindowStatus(mx(`${D}T14:05:00`))).find((w) => w.code === "DIA")).toMatchObject({ closeTime: "08:00:00", override: null });
+    const audit = await queryOne<{ n: number }>("SELECT count(*)::int n FROM audit_logs WHERE action LIKE 'WINDOW_%'");
+    expect(audit!.n).toBe(4);
+  });
+
+  it("la apertura del supervisor solo aplica a ese día", async () => {
+    await expect(confirmAt("Gustavo Mata", "2026-12-23T09:00:00")).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
   });
 });
 
@@ -769,22 +817,22 @@ describe("Llegaré tarde", () => {
     const antonio = await sessionAt("Antonio Rosado");
     await expect(createLateNotice(antonio, { eta: "08:00", reason: " " }, "ip", mx(`${D}T06:50:00`))).rejects.toMatchObject({ code: "REASON_REQUIRED" });
     await expect(createLateNotice(antonio, { eta: "12:00", reason: "Tráfico" }, "ip", mx(`${D}T06:50:00`))).rejects.toMatchObject({ code: "BAD_ETA" });
-    await expect(createLateNotice(antonio, { eta: "08:00", reason: "Tráfico" }, "ip", mx(`${D}T07:21:00`))).rejects.toMatchObject({ code: "TOO_LATE" });
+    await expect(createLateNotice(antonio, { eta: "09:00", reason: "Tráfico" }, "ip", mx(`${D}T08:01:00`))).rejects.toMatchObject({ code: "TOO_LATE" });
     const n = await createLateNotice(antonio, { eta: "08:00", reason: "Se descompuso el transporte" }, "ip", mx(`${D}T06:50:00`));
     expect(n.eta).toBe("08:00:00");
     await expect(createLateNotice(antonio, { eta: "08:10", reason: "Otra vez" }, "ip", mx(`${D}T06:55:00`))).rejects.toMatchObject({ code: "ALREADY_NOTIFIED" });
   });
 
   it("después del cierre: el líder y el supervisor lo ven como 'Avisó retardo' con motivo", async () => {
-    const view = await getAttendanceView(await sessionAt("Antonio Rosado"), mx(`${D}T07:40:00`));
+    const view = await getAttendanceView(await sessionAt("Antonio Rosado"), mx(`${D}T08:01:00`));
     expect(view).toMatchObject({ windowState: "OPEN", baseWindowState: "CLOSED", registration: { mode: "LATE_NOTICE" }, canNotifyLate: false });
-    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T07:40:00`));
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T08:01:00`));
     expect(rows.find((x) => x.fullName === "Antonio Rosado")).toMatchObject({ status: "RETARDO", lateEta: "08:00:00" });
-    const g = await getMyGroup(await sessionAt("Isaías Romero"), mx(`${D}T07:40:00`));
+    const g = await getMyGroup(await sessionAt("Isaías Romero"), mx(`${D}T08:01:00`));
     expect(g.leaderView!.rows.find((x) => x.fullName === "Antonio Rosado")).toMatchObject({
       status: "RETARDO", lateReason: "Se descompuso el transporte",
     });
-    const rep = await buildReport(D, "DIA", mx(`${D}T07:40:00`));
+    const rep = await buildReport(D, "DIA", mx(`${D}T08:01:00`));
     expect(rep.lists.RETARDO).toEqual(["Antonio Rosado (CENTRAL) · avisó, llega ~08:00"]);
     expect(rep.lists.FALTA).not.toContain("Antonio Rosado (CENTRAL)");
   });
@@ -832,22 +880,183 @@ describe("Recordatorios push (7:05 y 7:15 / 19:05 y 19:15)", () => {
     await createLateNotice(await sessionAt("Miguel Cruz"), { eta: "08:00", reason: "Trámite" }, "ip", mx(`${D}T06:30:00`));
 
     const r1 = await sendReminders(mx(`${D}T07:05:00`), fake);
-    expect(r1.results).toEqual([{ shift: "DIA", kind: "R15", targets: 1, sent: 1, removed: 0 }]);
+    expect(r1.results).toEqual([{ shift: "DIA", kind: "R1", targets: 1, sent: 1, removed: 0 }]);
     expect(sent[0]).toMatchObject({ endpoint: sub(1).endpoint });
-    expect(sent[0].payload.body).toContain("07:20 a. m.");
+    expect(sent[0].payload.body).toContain("08:00 a. m.");
 
     const again = await sendReminders(mx(`${D}T07:06:00`), fake);
-    expect(again.results[0]).toMatchObject({ kind: "R15", sent: 0 });
+    expect(again.results[0]).toMatchObject({ kind: "R1", sent: 0 });
 
     const r2 = await sendReminders(mx(`${D}T07:15:00`), fake);
-    expect(r2.results).toEqual([{ shift: "DIA", kind: "R5", targets: 1, sent: 1, removed: 0 }]);
-    expect(sent[1].payload.title).toContain("Últimos minutos");
+    expect(r2.results).toEqual([{ shift: "DIA", kind: "R2", targets: 1, sent: 1, removed: 0 }]);
+    expect(sent[1].payload.title).toContain("Recuerda");
 
     expect((await sendReminders(mx(`${D}T12:00:00`), fake)).results).toEqual([]);
 
     const night = await sendReminders(mx(`${D}T19:05:00`), fake);
-    expect(night.results).toEqual([{ shift: "NOCHE", kind: "R15", targets: 1, sent: 0, removed: 1 }]);
+    expect(night.results).toEqual([{ shift: "NOCHE", kind: "R1", targets: 1, sent: 0, removed: 1 }]);
     const left = await queryOne<{ n: number }>("SELECT count(*)::int n FROM push_subscriptions WHERE endpoint = $1", [sub(4).endpoint]);
     expect(left!.n).toBe(0);
+  });
+});
+
+describe("Mi perfil: datos del trabajador", () => {
+  const now = mx("2026-12-12T15:00:00");
+  it("los datos empiezan incompletos y se validan", async () => {
+    const e = await sessionAt("Norberto Sánchez");
+    const p0 = await getProfile(e.id);
+    expect(p0.complete).toBe(false);
+    expect(p0.missing).toEqual(expect.arrayContaining(["teléfono", "fecha de nacimiento", "número de botas", "talla de chaleco"]));
+    const ok = { fullName: "Norberto Sánchez Ruíz", phone: "4421234567", birthDate: "1990-05-10", bootSize: 27.5, vestSize: "GRANDE" };
+    for (const [patch, code] of [
+      [{ fullName: "Norberto" }, "BAD_NAME"],
+      [{ fullName: "Norberto S4nchez" }, "BAD_NAME"],
+      [{ fullName: "Norberto Sánchez!" }, "BAD_NAME"],
+      [{ fullName: "" }, "NAME_REQUIRED"],
+      [{ phone: "442123456" }, "BAD_PHONE"],
+      [{ birthDate: "2020-01-01" }, "BAD_BIRTH"],
+      [{ bootSize: 27.3 }, "BAD_BOOT"],
+      [{ vestSize: "XL" }, "BAD_VEST"],
+    ] as const) {
+      await expect(updateMyProfile(e, { ...ok, ...patch }, "ip", now)).rejects.toMatchObject({ code });
+    }
+    const p = await updateMyProfile(e, { ...ok, fullName: "  Norberto   Sánchez Núñez  " }, "ip", now);
+    expect(p).toMatchObject({ complete: true, fullName: "Norberto Sánchez Núñez", phone: "4421234567", bootSize: 27.5, vestSize: "GRANDE" });
+  });
+
+  it("el supervisor también exige nombre completo al registrar trabajadores", async () => {
+    await expect(createEmployee({ fullName: "Pedro", role: "EMPLOYEE", departmentId: 1, shiftId: 1 }, admin, "ip"))
+      .rejects.toMatchObject({ code: "BAD_NAME" });
+  });
+});
+
+describe("Ficha del empleado para el supervisor", () => {
+  it("muestra datos, vacaciones y faltas por semana y por mes", async () => {
+    const c = await employeeByName("Carlos González");
+    await query("UPDATE employees SET created_at = '2026-12-01T12:00:00Z' WHERE id = $1", [c.id]);
+    await updateEmployeeDetailsByAdmin(c.id, { phone: "4427654321", bootSize: 28, vestSize: "MEDIANO", vacationDays: 12 }, admin, "ip", mx("2026-12-12T15:00:00"));
+    const d = await getEmployeeDetail(c.id, mx("2026-12-12T15:00:00"));
+    expect(d.employee).toMatchObject({ employeeNumber: c.employee_number, phone: "4427654321", bootSize: 28, vestSize: "MEDIANO", area: "Lavadoras" });
+    expect(d.vacations).toMatchObject({ assigned: 12, used: 0, available: 12 });
+    // Del 1 al 11 de diciembre no registró. Solo cuentan lunes a jueves:
+    // 1, 2, 3, 7, 8, 9 y 10 = 7 (el viernes 4 y 11 son descanso; 5, 6 fin de semana)
+    expect(d.faltas.month).toBe(7);
+    expect(d.faltas.week).toBe(4); // lunes 7 a jueves 10
+    expect(d.faltas.weeks[0]).toEqual({ weekStart: "2026-12-07", faltas: 4 });
+    expect(d.faltas.months[0]).toEqual({ month: "2026-12", faltas: 7 });
+    await expect(updateEmployeeDetailsByAdmin(c.id, { vacationDays: 200 }, admin, "ip", new Date())).rejects.toMatchObject({ code: "BAD_VACATION" });
+  });
+});
+
+describe("Calendario laboral", () => {
+  it("feriados de ley y tipos de día", async () => {
+    const h = lftHolidays(2026).map((x) => x.date);
+    expect(h).toEqual(["2026-01-01", "2026-02-02", "2026-03-16", "2026-05-01", "2026-09-16", "2026-11-16", "2026-12-25"]);
+    expect(lftHolidays(2030).map((x) => x.date)).toContain("2030-10-01");
+    expect(await getDayInfo("2026-12-24")).toMatchObject({ type: "LABORAL", works: true, overtime: false, hours: { DIA: "7:30 a. m. – 7:30 p. m." } });
+    expect(await getDayInfo("2026-11-27")).toMatchObject({ type: "VIERNES", works: true, overtime: true, hours: { NOCHE: "5:30 p. m. – 5:30 a. m." } });
+    expect(await getDayInfo("2026-12-25")).toMatchObject({ type: "FERIADO", label: "Navidad", works: false });
+    expect(await getDayInfo("2026-12-26")).toMatchObject({ type: "NO_LABORAL", works: false });
+  });
+
+  it("sábado: no se registra, no hay faltas y el reporte dice día no laborable", async () => {
+    const D = "2026-12-26";
+    await expect(confirmAt("Carlos González", `${D}T06:00:00`)).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T09:00:00`));
+    expect(new Set(rows.map((r) => r.status))).toEqual(new Set(["DESCANSO"]));
+    const rep = await buildReport(D, "DIA", mx(`${D}T09:00:00`));
+    expect(rep.text).toContain("*DÍA NO LABORABLE* (SÁBADO)");
+    expect(rep.lists.FALTA).toEqual([]);
+    expect((await sendReminders(mx(`${D}T07:05:00`), async () => ({ statusCode: 201 }))).results).toEqual([]);
+  });
+
+  it("viernes: trabajan todos; quien no llega queda en DESCANSO, no en falta", async () => {
+    const D = "2026-12-18";
+    await confirmAt("Arturo Mata", `${D}T06:30:00`);
+    const rows = await getRoster({ date: D, shiftId: 1 }, mx(`${D}T09:00:00`));
+    expect(rows.find((r) => r.fullName === "Arturo Mata")!.status).toBe("CONFIRMADO");
+    expect(rows.find((r) => r.fullName === "David Ponce")!.status).toBe("DESCANSO");
+    expect(rows.filter((r) => r.status === "FALTA")).toHaveLength(0);
+    const rep = await buildReport(D, "DIA", mx(`${D}T09:00:00`));
+    expect(rep.text).toContain("*JORNADA:* VIERNES · TIEMPO EXTRA");
+    expect(rep.lists.DESCANSO).toContain("David Ponce (RAMPA C)");
+    expect(rep.text).toContain("*DESCANSO:*\n- ");
+  });
+
+  it("el supervisor cambia días: un sábado laborable, un jueves no laborable, viernes de jornada larga", async () => {
+    await expect(setCalendarDay("2027-01-07", "VIERNES", "", admin, "ip")).rejects.toMatchObject({ code: "BAD_TYPE" });
+    await setCalendarDay("2027-01-09", "LABORAL", "Inventario", admin, "ip");
+    expect((await confirmAt("Carlos González", "2027-01-09T06:00:00")).via).toBe("NORMAL");
+    await setCalendarDay("2027-01-07", "NO_LABORAL", "Paro técnico", admin, "ip");
+    await expect(confirmAt("Carlos González", "2027-01-07T06:00:00")).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    const rows = await getRoster({ date: "2027-01-07", shiftId: 1 }, mx("2027-01-07T09:00:00"));
+    expect(rows.find((r) => r.fullName === "Carlos González")).toMatchObject({ status: "DESCANSO", observations: "Día no laborable (Paro técnico)" });
+    const long = await setCalendarDay("2027-01-08", "VIERNES_LARGO", "", admin, "ip");
+    expect(long).toMatchObject({ overtime: true, hours: { DIA: "7:30 a. m. – 7:30 p. m." } });
+    const reset = await resetCalendarDay("2027-01-07", admin, "ip");
+    expect(reset.type).toBe("LABORAL");
+  });
+
+  it("el supervisor puede abrir el registro en un día no laborable", async () => {
+    await setWindow("DIA", "OPEN", admin, "ip", mx("2026-12-26T10:00:00"));
+    expect((await confirmAt("Wenceslao Félix", "2026-12-26T10:05:00")).via).toBe("NORMAL");
+  });
+});
+
+describe("Cambio de área (apoyo temporal y cambio permanente)", () => {
+  const before = mx("2027-01-08T12:00:00");
+  it("Gustavo pasa de Lavadoras de día a Central de noche (apoyo del 11 al 14 de enero)", async () => {
+    const gustavo = await employeeByName("Gustavo Mata");
+    const central = await queryOne<{ id: number }>("SELECT id FROM departments WHERE code='CENTRAL'");
+    await expect(changeArea({ employeeId: gustavo.id, shiftCode: "NOCHE", departmentId: central!.id, effectiveFrom: "2027-01-11", endDate: "2027-01-10" }, admin, "ip", before))
+      .rejects.toMatchObject({ code: "BAD_END" });
+    await changeArea({ employeeId: gustavo.id, shiftCode: "NOCHE", departmentId: central!.id, effectiveFrom: "2027-01-11", endDate: "2027-01-14" }, admin, "ip", before);
+    expect(await getPlacement(gustavo.id, "2027-01-08")).toMatchObject({ temporary: false });
+    expect(await getPlacement(gustavo.id, "2027-01-12")).toMatchObject({ departmentId: central!.id, shiftId: 2, temporary: true, until: "2027-01-14" });
+    expect((await getPlacement(gustavo.id, "2027-01-18")).temporary).toBe(false); // regresa solo
+    expect((await getPlacement(gustavo.id, "2027-01-18")).shiftId).toBe(1);
+  });
+
+  it("registra de noche, cuenta en Central y el reporte dice 'apoyo en CENTRAL'", async () => {
+    await expect(confirmAt("Gustavo Mata", "2027-01-12T06:00:00")).rejects.toMatchObject({ code: "REGISTRATION_CLOSED" });
+    await confirmAt("Gustavo Mata", "2027-01-12T17:30:00");
+    const att = await queryOne<{ dept: string }>(
+      `SELECT d.code dept FROM attendance a JOIN departments d ON d.id = a.department_id JOIN employees e ON e.id = a.employee_id
+       WHERE e.full_name = 'Gustavo Mata' AND a.operational_date = '2027-01-12'`);
+    expect(att!.dept).toBe("CENTRAL");
+    const rep = await buildReport("2027-01-12", "NOCHE", mx("2027-01-12T21:00:00"));
+    expect(rep.lists.APOYO).toEqual(["Gustavo Mata · apoyo en CENTRAL (de LAVADORAS)"]);
+    expect(rep.text).toContain("*APOYO:*\n- Gustavo Mata · apoyo en CENTRAL (de LAVADORAS)");
+    expect(rep.departments.find((d) => d.label === "CENTRAL")!.employees).toBe(1);
+    const day = await buildReport("2027-01-12", "DIA", mx("2027-01-12T21:00:00"));
+    expect(day.lists.FALTA.join()).not.toContain("Gustavo Mata"); // ya no cuenta en Lavadoras de día
+  });
+
+  it("solo lo ve el líder del área destino (Javier), no el de origen (Jonathan)", async () => {
+    const now = mx("2027-01-12T21:00:00");
+    const javier = await getMyGroup(await sessionAt("Javier Ángeles"), now);
+    expect(javier.leaderView!.rows.find((r) => r.fullName === "Gustavo Mata")).toMatchObject({ status: "CONFIRMADO", support: true, homeDepartmentName: "Lavadoras" });
+    expect(javier.members.map((m) => m.fullName)).toContain("Gustavo Mata");
+    const jonathan = await getMyGroup(await sessionAt("Jonathan Cruz"), now);
+    expect(jonathan.members.map((m) => m.fullName)).not.toContain("Gustavo Mata");
+    expect(jonathan.leaderView!.rows.map((r) => r.fullName)).not.toContain("Gustavo Mata");
+  });
+
+  it("durante el apoyo no se cambia su turno en el rol; se puede terminar el apoyo antes", async () => {
+    const gustavo = await employeeByName("Gustavo Mata");
+    await expect(saveRol("2027-01-13", [{ employeeId: gustavo.id, shiftCode: "DIA" }], admin, "ip", mx("2027-01-12T22:00:00")))
+      .rejects.toMatchObject({ code: "IN_SUPPORT" });
+    await endSupport(gustavo.id, admin, "ip", mx("2027-01-13T10:00:00"));
+    expect(await getPlacement(gustavo.id, "2027-01-14")).toMatchObject({ temporary: false, shiftId: 1 });
+  });
+
+  it("cambio permanente: Carlos pasa a RC y conserva el área al cambiar su turno", async () => {
+    const carlos = await employeeByName("Carlos González");
+    const rc = await queryOne<{ id: number }>("SELECT id FROM departments WHERE code='RC'");
+    await changeArea({ employeeId: carlos.id, shiftCode: "DIA", departmentId: rc!.id, effectiveFrom: "2027-01-11" }, admin, "ip", before);
+    await saveRol("2027-01-18", [{ employeeId: carlos.id, shiftCode: "NOCHE" }], admin, "ip", before);
+    expect(await getPlacement(carlos.id, "2027-01-20")).toMatchObject({ departmentId: rc!.id, shiftId: 2, temporary: false });
+    const rol = await getRol("2027-01-20");
+    expect(rol.find((r) => r.fullName === "Carlos González")).toMatchObject({ departmentName: "RC", support: true, temporary: false });
   });
 });

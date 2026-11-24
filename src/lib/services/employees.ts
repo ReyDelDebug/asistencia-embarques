@@ -4,6 +4,7 @@ import { getLocalParts, isValidDateString } from "../time";
 import { logAudit } from "./audit";
 import { revokeAllSessions, type SessionUser } from "./auth";
 import { getDepartments, getShifts, getSubareas } from "./catalog";
+import { validateFullName } from "./profile";
 
 export type EmployeeRole = "EMPLOYEE" | "LEADER" | "SUPERVISOR";
 
@@ -77,8 +78,7 @@ interface EmployeeInput {
 }
 
 async function validateInput(input: EmployeeInput): Promise<EmployeeInput & { shiftCode: string; subareaId: number | null }> {
-  const fullName = String(input.fullName ?? "").trim().replace(/\s+/g, " ");
-  if (fullName.length < 2 || fullName.length > 80) throw new AppError(400, "BAD_NAME", "Nombre no válido.");
+  const fullName = validateFullName(input.fullName);
   const role = String(input.role ?? "EMPLOYEE").toUpperCase() as EmployeeRole;
   if (!["EMPLOYEE", "LEADER", "SUPERVISOR"].includes(role)) throw new AppError(400, "BAD_ROLE", "Rol no válido.");
   const shifts = await getShifts();

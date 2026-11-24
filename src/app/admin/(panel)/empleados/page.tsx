@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import EmployeeDetail from "@/components/admin/EmployeeDetail";
 import {
   Alert, api, Avatar, Badge, Button, Card, CardHeader, dateShort, dateTimeMx, Field, inputClass, Modal, ROLE_LABELS, STATUS_LABELS, timeMx,
 } from "@/components/ui";
@@ -33,6 +34,7 @@ export default function EmployeesPage() {
   const [reason, setReason] = useState("");
   const [history, setHistory] = useState<{ emp: Emp; data: History | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -140,7 +142,7 @@ export default function EmployeesPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Empleados</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Empleados</h1>
           <p className="text-sm text-slate-500">{list.filter((e) => e.active).length} activos · {list.filter((e) => !e.active).length} dados de baja</p>
         </div>
         <Button onClick={() => { setFormError(null); setForm(newForm()); }}>+ Registrar trabajador</Button>
@@ -176,7 +178,7 @@ export default function EmployeesPage() {
               {rows.map((e) => (
                 <tr key={e.id} className={e.active ? "" : "bg-slate-50 text-slate-500"}>
                   <td className="px-4 py-2.5 font-mono">{e.employee_number}</td>
-                  <td className="px-4 py-2.5 font-semibold"><span className="flex items-center gap-2"><Avatar employeeId={e.id} name={e.full_name} version={e.photo_version} size={30} /><span>{e.full_name}{e.panel_username && <span className="ml-2 text-xs font-normal text-slate-500">(panel: {e.panel_username})</span>}</span></span></td>
+                  <td className="px-4 py-2.5 font-semibold"><button onClick={() => setDetailId(e.id)} className="flex items-center gap-2 text-left hover:text-emerald-700"><Avatar employeeId={e.id} name={e.full_name} version={e.photo_version} size={30} /><span className="underline decoration-slate-300 underline-offset-2">{e.full_name}{e.panel_username && <span className="ml-2 text-xs font-normal text-slate-500">(panel: {e.panel_username})</span>}</span></button></td>
                   <td className="px-4 py-2.5">{ROLE_LABELS[e.role]}</td>
                   <td className="px-4 py-2.5">{e.department_name ? `${e.department_name}${e.subarea_name ? ` · ${e.subarea_name}` : ""}` : "Supervisión"}</td>
                   <td className="px-4 py-2.5">{e.current_shift_name}</td>
@@ -191,6 +193,7 @@ export default function EmployeesPage() {
                       {e.active && <Button variant="secondary" className="px-2 py-1 text-xs"
                         onClick={() => { setFormError(null); setForm({ id: e.id, employeeNumber: e.employee_number, fullName: e.full_name, role: e.role, departmentId: String(e.department_id ?? ""), subareaId: String(e.subarea_id ?? ""), shiftId: String(e.shift_id) }); }}>Editar</Button>}
                       {e.active && <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setConfirmReset(e)}>Restablecer PIN</Button>}
+                      <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setDetailId(e.id)}>Ficha</Button>
                       <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => openHistory(e)}>Historial</Button>
                       {e.photo_version && <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => removePhoto(e)}>Quitar foto</Button>}
                       {e.active
@@ -209,7 +212,7 @@ export default function EmployeesPage() {
         footer={<><Button variant="secondary" onClick={() => setForm(null)}>Cancelar</Button><Button onClick={saveForm} loading={busy}>Guardar</Button></>}>
         {form && (
           <div className="space-y-3">
-            <Field label="Nombre completo">
+            <Field label="Nombre completo *" hint="Nombre y apellidos, solo letras (se permiten acentos y ñ).">
               <input className={inputClass} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} />
             </Field>
             <div className="grid grid-cols-2 gap-3">
@@ -279,6 +282,8 @@ export default function EmployeesPage() {
           <Field label="Motivo (obligatorio)"><textarea className={inputClass} rows={3} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
         </div>
       </Modal>
+
+      <EmployeeDetail employeeId={detailId} onClose={() => setDetailId(null)} onChanged={load} />
 
       <Modal wide open={!!history} title={`Historial · ${history?.emp.full_name ?? ""}`} onClose={() => setHistory(null)}>
         {!history?.data ? <p className="text-sm text-slate-500">Cargando…</p> : <HistoryView data={history.data} />}

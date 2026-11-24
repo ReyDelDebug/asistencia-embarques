@@ -2,6 +2,7 @@
 
 import { useRef, useState, type FormEvent } from "react";
 import { Alert, api, Avatar, Button, inputClass } from "../ui";
+import MyDataForm from "./MyDataForm";
 
 /** Recorta al centro en cuadrado y comprime a JPEG 320×320 en el celular. */
 async function toSquareJpeg(file: File, size = 320): Promise<string> {
@@ -111,6 +112,8 @@ export default function ProfileTab({
         <p className="mt-2 text-xs text-slate-500">Tu foto solo la ven tus compañeros de área y los supervisores.</p>
         {photoMsg && <div className="mt-3 text-left"><Alert kind={photoMsg.kind}>{photoMsg.text}</Alert></div>}
       </div>
+
+      <MyDataForm onSaved={onPhotoChanged} />
 
       <form onSubmit={changePin} className="space-y-3 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-base font-bold text-slate-900">Restablecer mi PIN</p>

@@ -65,7 +65,7 @@ export default function UsersPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Usuarios del panel</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Usuarios del panel</h1>
           <p className="text-sm text-slate-500">Supervisores con acceso al panel administrativo</p>
         </div>
         <Button onClick={() => setForm({ username: "", displayName: "", role: "SUPERVISOR", employeeId: "" })}>+ Crear supervisor</Button>

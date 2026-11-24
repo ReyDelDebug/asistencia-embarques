@@ -8,7 +8,7 @@ import { AppError } from "../errors";
 import { currentOperationalContext, getLocalParts } from "../time";
 import type { SessionEmployee } from "./auth";
 import { getRoster, loadCatalog, type AttendanceStatus } from "./roster";
-import { getEffectiveShiftId } from "./rol";
+import { getEffectiveShiftId, getPlacement } from "./rol";
 
 export interface GroupMember {
   employeeId: number;
@@ -33,6 +33,8 @@ export interface LeaderAttendanceRow {
   lateReason: string | null; // el líder sí ve el motivo del aviso de retardo
   extensionUntil: string | null;
   canExtend: boolean;
+  support: boolean;
+  homeDepartmentName: string | null;
 }
 
 export interface MyGroup {
@@ -51,21 +53,26 @@ export interface MyGroup {
 }
 
 export async function getMyGroup(me: SessionEmployee, now: Date, shiftCodeParam?: string | null): Promise<MyGroup> {
-  if (me.departmentId == null) {
+  const today = getLocalParts(now).date;
+  // El área que cuenta es la VIGENTE hoy (si está en apoyo en otra área, ve a esa área)
+  const myPlacement = await getPlacement(me.id, today);
+  const myDept = myPlacement.departmentId;
+  if (myDept == null) {
     return { departmentName: null, members: [], isLeader: false, leaderView: null };
   }
-  const today = getLocalParts(now).date;
+  const deptName = (await query<{ name: string }>(`SELECT name FROM departments WHERE id = $1`, [myDept]))[0]?.name ?? null;
   const members = await query<{
     id: number; full_name: string; role: "EMPLOYEE" | "LEADER"; subarea_name: string | null; shift_name: string; photo_at: Date | null;
   }>(
     `SELECT e.id, e.full_name, e.role, sa.name AS subarea_name, s.name AS shift_name, p.updated_at AS photo_at
      FROM employees e
-     LEFT JOIN subareas sa ON sa.id = e.subarea_id
-     JOIN shifts s ON s.id = employee_shift_on(e.id, $2)
+     CROSS JOIN LATERAL employee_placement_on(e.id, $2) pl
+     LEFT JOIN subareas sa ON sa.id = pl.subarea_id
+     JOIN shifts s ON s.id = pl.shift_id
      LEFT JOIN employee_photos p ON p.employee_id = e.id
-     WHERE e.active AND e.department_id = $1
+     WHERE e.active AND e.role <> 'SUPERVISOR' AND pl.department_id = $1
      ORDER BY CASE e.role WHEN 'LEADER' THEN 0 ELSE 1 END, sa.sort_order NULLS FIRST, e.full_name`,
-    [me.departmentId, today],
+    [myDept, today],
   );
 
   const isLeader = me.role === "LEADER";
@@ -82,7 +89,7 @@ export async function getMyGroup(me: SessionEmployee, now: Date, shiftCodeParam?
     // Fecha: la del contexto operativo si coincide el turno (ej. madrugada = noche anterior); si no, hoy.
     const date = shift.code === ctx.shiftCode ? ctx.date : today;
     const photoBy = new Map(members.map((m) => [m.id, m.photo_at ? String(m.photo_at.getTime()) : null]));
-    const roster = await getRoster({ date, shiftId: shift.id, departmentId: me.departmentId }, now, catalog);
+    const roster = await getRoster({ date, shiftId: shift.id, departmentId: myDept }, now, catalog);
     const rows = roster
       .filter((r) => r.role !== "SUPERVISOR")
       .map((r) => ({
@@ -98,6 +105,8 @@ export async function getMyGroup(me: SessionEmployee, now: Date, shiftCodeParam?
         lateReason: r.lateReason,
         extensionUntil: r.extensionUntil,
         canExtend: r.canExtend && r.employeeId !== me.id,
+        support: r.support,
+        homeDepartmentName: r.homeDepartmentName,
       }));
     leaderView = {
       date,
@@ -111,7 +120,7 @@ export async function getMyGroup(me: SessionEmployee, now: Date, shiftCodeParam?
   }
 
   return {
-    departmentName: me.departmentName,
+    departmentName: deptName,
     members: members.map((m) => ({
       employeeId: m.id,
       fullName: m.full_name,

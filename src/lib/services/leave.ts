@@ -10,6 +10,13 @@ import { addDays, daysBetween, getLocalParts, isValidDateString } from "../time"
 import { logAudit } from "./audit";
 import type { SessionEmployee, SessionUser } from "./auth";
 import { getEffectiveShiftId } from "./rol";
+import { getVacationSummary } from "./profile";
+import { getDaysInfo } from "./calendar";
+
+/** Días que cuentan para vacaciones/PSG: laborables de lunes a jueves (no viernes de tiempo extra, fines de semana ni feriados). */
+export async function workingDates(start: string, end: string): Promise<string[]> {
+  return (await getDaysInfo(start, end)).filter((d) => d.works && !d.overtime).map((d) => d.date);
+}
 
 export const LEAVE_TYPES = ["VACACIONES", "PSG"] as const;
 export const MAX_LEAVE_DAYS = 31;
@@ -46,6 +53,12 @@ interface Raw {
   id: number; employee_id: number; employee_number: string; full_name: string; department_name: string;
   type: LeaveRequest["type"]; start_date: string; end_date: string; reason: string; status: LeaveRequest["status"];
   created_at: Date; decided_by_name: string | null; decided_at: Date | null; decision_note: string | null;
+}
+
+async function mapAll(rows: Raw[]): Promise<LeaveRequest[]> {
+  const out: LeaveRequest[] = [];
+  for (const r of rows) out.push({ ...map(r), days: (await workingDates(r.start_date, r.end_date)).length });
+  return out;
 }
 
 function map(r: Raw): LeaveRequest {
@@ -87,6 +100,22 @@ export async function createLeaveRequest(
   }
   const reason = String(input.reason ?? "").trim().slice(0, 300);
 
+  const workDays = await workingDates(startDate, endDate);
+  if (workDays.length === 0) {
+    throw new AppError(400, "NO_WORK_DAYS", "Esas fechas no incluyen días laborables (lunes a jueves).");
+  }
+  if (type === "VACACIONES") {
+    const v = await getVacationSummary(employee.id, now);
+    const requested = workDays.length;
+    if (v.assigned == null) {
+      throw new AppError(409, "NO_VACATION_DAYS", "Tu supervisor aún no registra tus días de vacaciones. Pídele que los capture.");
+    }
+    if (requested > (v.requestable ?? 0)) {
+      throw new AppError(409, "NOT_ENOUGH_DAYS",
+        `Solo tienes ${Math.max(0, v.requestable ?? 0)} día(s) disponible(s) para solicitar${v.pending ? ` (hay ${v.pending} en solicitudes pendientes)` : ""}.`);
+    }
+  }
+
   const overlap = await queryOne<{ id: number }>(
     `SELECT id FROM leave_requests WHERE employee_id = $1 AND status IN ('PENDIENTE', 'APROBADA')
      AND start_date <= $3 AND end_date >= $2 LIMIT 1`,
@@ -108,12 +137,12 @@ export async function createLeaveRequest(
 
 export async function getLeaveRequest(id: number): Promise<LeaveRequest | null> {
   const r = await queryOne<Raw>(`${SELECT} WHERE lr.id = $1`, [id]);
-  return r ? map(r) : null;
+  return r ? (await mapAll([r]))[0] : null;
 }
 
 export async function listMyLeaveRequests(employeeId: number): Promise<LeaveRequest[]> {
   const rows = await query<Raw>(`${SELECT} WHERE lr.employee_id = $1 ORDER BY lr.start_date DESC, lr.id DESC LIMIT 50`, [employeeId]);
-  return rows.map(map);
+  return mapAll(rows);
 }
 
 export async function cancelMyLeaveRequest(employee: SessionEmployee, id: number, ip: string): Promise<void> {
@@ -139,7 +168,7 @@ export async function listLeaveRequests(opts: { status?: string | null; from?: s
      ORDER BY CASE lr.status WHEN 'PENDIENTE' THEN 0 ELSE 1 END, lr.start_date, lr.id LIMIT 500`,
     params,
   );
-  return rows.map(map);
+  return mapAll(rows);
 }
 
 export async function decideLeaveRequest(
@@ -163,6 +192,14 @@ export async function decideLeaveRequest(
     if (req.status !== "PENDIENTE") throw new AppError(409, "ALREADY_DECIDED", "Esta solicitud ya fue atendida.");
 
     const status = decision === "APROBAR" ? "APROBADA" : "RECHAZADA";
+    if (status === "APROBADA" && req.type === "VACACIONES") {
+      const v = await getVacationSummary(req.employee_id, now);
+      const requested = (await workingDates(req.start_date, req.end_date)).length;
+      if (v.available == null || requested > v.available) {
+        throw new AppError(409, "NOT_ENOUGH_DAYS",
+          `${req.full_name} solo tiene ${Math.max(0, v.available ?? 0)} día(s) de vacaciones disponibles. Ajusta sus días en Empleados antes de aprobar.`);
+      }
+    }
     await query(
       `UPDATE leave_requests SET status = $2, decided_by = $3, decided_at = $4, decision_note = $5 WHERE id = $1`,
       [id, status, user.id, now, n || null], client,
@@ -171,9 +208,7 @@ export async function decideLeaveRequest(
     let daysRegistered = 0;
     const skipped: string[] = [];
     if (status === "APROBADA") {
-      const span = daysBetween(req.start_date, req.end_date) + 1;
-      for (let i = 0; i < span; i++) {
-        const date = addDays(req.start_date, i);
+      for (const date of await workingDates(req.start_date, req.end_date)) {
         const att = await queryOne<{ id: number }>(
           `SELECT id FROM attendance WHERE employee_id = $1 AND operational_date = $2`, [req.employee_id, date], client,
         );

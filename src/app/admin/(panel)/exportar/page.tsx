@@ -51,7 +51,7 @@ export default function ExportPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-5">
-      <h1 className="text-xl font-bold text-slate-900">Exportación a Excel</h1>
+      <h1 className="text-2xl font-bold tracking-tight text-slate-900">Exportación a Excel</h1>
       <Card>
         <CardHeader title="Parámetros" subtitle="El archivo incluye: Asistencia general, Resumen e Historial" />
         <div className="space-y-4 p-4">

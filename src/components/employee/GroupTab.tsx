@@ -11,6 +11,7 @@ interface LeaderRow {
   employeeId: number; fullName: string; role: string; subareaName: string | null; status: string;
   confirmedAt: string | null; photoVersion: string | null;
   late: boolean; lateEta: string | null; lateReason: string | null; extensionUntil: string | null; canExtend: boolean;
+  support: boolean; homeDepartmentName: string | null;
 }
 interface Group {
   departmentName: string | null;
@@ -63,6 +64,18 @@ export default function GroupTab() {
     }
   }
 
+  async function revoke(id: number) {
+    setBusy(true);
+    try {
+      await api("/api/me/extensions/revoke", { method: "POST", json: { employeeId: id } });
+      load();
+    } catch (e) {
+      setNotice({ kind: "error", text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (error) return <Alert>{error}</Alert>;
   if (!data) return <p className="py-10 text-center text-sm text-slate-500">Cargando…</p>;
   if (!data.departmentName) {
@@ -91,7 +104,7 @@ export default function GroupTab() {
             {lv.rows.filter((r) => r.canExtend).length > 1 && (
               <Button variant="secondary" className="mt-2 w-full text-xs" loading={busy}
                 onClick={() => extend(lv.rows.filter((r) => r.canExtend).map((r) => r.employeeId))}>
-                Abrir registro hasta {time12(lv.extensionClose)} a todos los que faltan ({lv.rows.filter((r) => r.canExtend).length})
+                Abrir registro a todos los que faltan ({lv.rows.filter((r) => r.canExtend).length})
               </Button>
             )}
             {notice && <div className="mt-2"><Alert kind={notice.kind}>{notice.text}</Alert></div>}
@@ -106,17 +119,21 @@ export default function GroupTab() {
                     {r.role === "LEADER" ? "Líder" : "Empleado"}{r.subareaName ? ` · ${r.subareaName}` : ""}
                     {r.confirmedAt ? ` · ${timeMx(r.confirmedAt)}` : ""}
                     {r.late && <span className="font-semibold text-orange-700"> · llegó tarde</span>}
+                    {r.support && <span className="font-semibold text-sky-700"> · apoyo{r.homeDepartmentName ? ` de ${r.homeDepartmentName}` : ""}</span>}
                   </p>
                   {r.lateEta && r.status !== "CONFIRMADO" && (
                     <p className="text-xs text-orange-800">Llega ~{time12(r.lateEta)} · {r.lateReason}</p>
                   )}
                   {r.extensionUntil && r.status !== "CONFIRMADO" && (
-                    <p className="text-xs text-sky-800">Registro abierto hasta {time12(r.extensionUntil)}</p>
+                    <p className="text-xs text-sky-800">
+                      Registro abierto ·{" "}
+                      <button disabled={busy} onClick={() => revoke(r.employeeId)} className="font-semibold underline disabled:opacity-50">Cerrar</button>
+                    </p>
                   )}
                   {r.canExtend && (
                     <button disabled={busy} onClick={() => extend([r.employeeId])}
                       className="mt-1 text-xs font-semibold text-sky-800 underline disabled:opacity-50">
-                      Abrir registro hasta {time12(lv.extensionClose)}
+                      Abrir registro
                     </button>
                   )}
                 </div>

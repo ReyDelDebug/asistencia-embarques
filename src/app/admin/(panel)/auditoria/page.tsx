@@ -65,7 +65,7 @@ export default function AuditPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Auditoría</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Auditoría</h1>
           <p className="text-sm text-slate-500">Registro inalterable de movimientos del sistema</p>
         </div>
         <select className={`${inputClass} w-auto`} value={action} onChange={(e) => { setOffset(0); setAction(e.target.value); }}>

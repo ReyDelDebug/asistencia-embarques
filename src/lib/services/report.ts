@@ -4,6 +4,7 @@ import { formatDateReport, formatTimeLocal, getLocalParts, isValidDateString, wi
 import { logAudit } from "./audit";
 import type { SessionUser } from "./auth";
 import { getRoster, loadCatalog, type RosterRow } from "./roster";
+import { shiftsForDate } from "./windows";
 
 export interface OperationalExtra {
   concept: string;
@@ -103,7 +104,8 @@ export interface ReportData {
   departments: { id: number; subareaId: number | null; label: string; employees: number; leaders: number; hasLeader: boolean; plantilla: number }[];
   extras: OperationalExtra[];
   total: number;
-  lists: Record<"FALTA" | "PSG" | "VACACIONES" | "INCAPACIDAD" | "BAJA" | "PENDIENTE" | "RETARDO", string[]>;
+  lists: Record<"FALTA" | "PSG" | "VACACIONES" | "INCAPACIDAD" | "BAJA" | "PENDIENTE" | "RETARDO" | "DESCANSO" | "APOYO", string[]>;
+  day: { type: string; label: string; works: boolean };
   operational: OperationalData;
   text: string;
 }
@@ -154,7 +156,9 @@ export async function buildReport(date: string, shiftCode: string, now: Date): P
   };
   const listOf = (status: RosterRow["status"]) => rows.filter((r) => r.status === status).map(nameWithArea);
 
-  const windowOpen = windowState(now, shift, date) === "OPEN" && getLocalParts(now).date === date;
+  const { shifts: effList, day } = await shiftsForDate(date);
+  const effShift = effList.find((x) => x.id === shift.id)!;
+  const windowOpen = windowState(now, effShift, date) === "OPEN" && getLocalParts(now).date === date;
   const lists = {
     FALTA: listOf("FALTA"),
     PSG: listOf("PSG"),
@@ -162,6 +166,15 @@ export async function buildReport(date: string, shiftCode: string, now: Date): P
     INCAPACIDAD: listOf("INCAPACIDAD"),
     BAJA: listOf("BAJA"),
     PENDIENTE: listOf("PENDIENTE"),
+    DESCANSO: day.works ? listOf("DESCANSO") : [],
+    APOYO: rows
+      .filter((r) => r.support && r.status !== "BAJA")
+      .map((r) => {
+        const sub = catalog.subareas.find((x) => x.id === r.subareaId);
+        const dept = catalog.departments.find((d) => d.id === r.departmentId);
+        const dest = sub ? `${dept?.reportLabel} ${sub.reportLabel}` : dept?.reportLabel ?? "";
+        return `${r.fullName} · apoyo en ${dest}${r.homeDepartmentName ? ` (de ${r.homeDepartmentName.toUpperCase()})` : ""}`;
+      }),
     RETARDO: rows
       .filter((r) => r.status === "RETARDO" || (r.status === "CONFIRMADO" && r.late))
       .map((r) => {
@@ -175,6 +188,8 @@ export async function buildReport(date: string, shiftCode: string, now: Date): P
   const block = (s: string) => { lines.push(s, ""); };
   block(`*${shift.reportTitle}*`);
   block(`*FECHA:* ${formatDateReport(date)}`);
+  if (!day.works) block(`*DÍA NO LABORABLE*${day.label ? ` (${day.label.toUpperCase()})` : ""}`);
+  else if (day.overtime) block(`*JORNADA:* ${day.type === "VIERNES_LARGO" ? "VIERNES · JORNADA LARGA" : "VIERNES · TIEMPO EXTRA"}`);
   block(`*SUPERVISOR:* ${supervisors}`);
   for (const d of departments) {
     block(`*${d.label}:* ${d.hasLeader ? `${d.employees}+${d.leaders}` : d.employees + d.leaders}`);
@@ -189,12 +204,14 @@ export async function buildReport(date: string, shiftCode: string, now: Date): P
     lines.push("");
   };
   if (lists.PENDIENTE.length > 0) listBlock("PENDIENTES POR CONFIRMAR", lists.PENDIENTE);
+  if (lists.APOYO.length > 0) listBlock("APOYO", lists.APOYO);
   listBlock("RETARDO", lists.RETARDO);
   listBlock("FALTA", lists.FALTA);
   listBlock("PSG", lists.PSG);
   listBlock("VACACIONES", lists.VACACIONES);
   listBlock("INCAPACIDAD", lists.INCAPACIDAD);
   listBlock("BAJA", lists.BAJA);
+  if (day.overtime) listBlock("DESCANSO", lists.DESCANSO);
   block(`*VACANTES:*${operational.vacantes ? ` ${operational.vacantes}` : ""}`);
   block(`*RECOGE:*${operational.recoge ? ` ${operational.recoge}` : ""}`);
   if (operational.notes) block(`*OBSERVACIONES:* ${operational.notes}`);
@@ -212,6 +229,7 @@ export async function buildReport(date: string, shiftCode: string, now: Date): P
     extras: operational.extras,
     total,
     lists,
+    day: { type: day.type, label: day.label, works: day.works },
     operational,
     text: lines.join("\n"),
   };

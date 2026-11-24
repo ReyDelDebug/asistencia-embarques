@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { IncidentModal, RevokeModal, type IncidentTarget } from "@/components/admin/IncidentModal";
+import { MyAttendance, WindowControl } from "@/components/admin/DashboardTop";
+import { Icon } from "@/components/admin/AdminShell";
 import {
   Alert, api, ApiError, Badge, Button, Card, CardHeader, dateLong, Field, inputClass, ROLE_LABELS, StatCard,
   StatusBadge, STATUS_LABELS, timeMx,
@@ -15,6 +17,7 @@ interface Row {
   incidentReason: string | null; incidentBy: string | null; observations: string;
   late: boolean; lateEta: string | null; lateReason: string | null; extensionUntil: string | null; extensionBy: string | null;
   canExtend: boolean;
+  support: boolean; homeDepartmentName: string | null; supportUntil: string | null;
 }
 interface Group { key: string; label: string; total: number; confirmed: number }
 interface Dashboard {
@@ -23,7 +26,7 @@ interface Dashboard {
   shifts: { id: number; code: string; name: string; openTime: string; closeTime: string }[];
   departments: { id: number; name: string }[];
   stats: {
-    total: number; confirmed: number; pending: number; retardo: number; lateArrivals: number; falta: number; vacaciones: number; incapacidad: number;
+    total: number; confirmed: number; pending: number; retardo: number; lateArrivals: number; falta: number; descanso: number; vacaciones: number; incapacidad: number;
     psg: number; baja: number; percentage: number; byDepartment: Group[]; byShift: Group[];
   };
   rows: Row[];
@@ -40,6 +43,18 @@ export default function DashboardPage() {
   const [extMsg, setExtMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [extBusy, setExtBusy] = useState(false);
 
+  async function revokeExt(id: number) {
+    setExtBusy(true);
+    try {
+      await api("/api/admin/extensions/revoke", { method: "POST", json: { employeeId: id } });
+      load();
+    } catch (e) {
+      setExtMsg({ kind: "error", text: (e as Error).message });
+    } finally {
+      setExtBusy(false);
+    }
+  }
+
   async function extend(ids: number[]) {
     setExtBusy(true);
     setExtMsg(null);
@@ -48,7 +63,7 @@ export default function DashboardPage() {
         method: "POST", json: { employeeIds: ids },
       });
       const parts = [];
-      if (r.granted.length) parts.push(`Registro abierto hasta las 7:30 para: ${r.granted.join(", ")}.`);
+      if (r.granted.length) parts.push(`Registro abierto para: ${r.granted.join(", ")}.`);
       if (r.skipped.length) parts.push(`Sin cambio: ${r.skipped.map((x) => `${x.name} (${x.reason})`).join(", ")}.`);
       setExtMsg({ kind: r.granted.length ? "success" : "error", text: parts.join(" ") });
       load();
@@ -95,7 +110,8 @@ export default function DashboardPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Asistencia del día</h1>
+          <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Panel de supervisión</p>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Asistencia del día</h1>
           <p className="text-sm text-slate-500">
             {dateLong(data.date)} · {data.shiftCode ? `Turno ${data.shifts.find((x) => x.code === data.shiftCode)?.name}` : "Ambos turnos"}
           </p>
@@ -106,6 +122,11 @@ export default function DashboardPage() {
           </Link>
           <a href={`/api/admin/export?${exportQs}`}><Button variant="secondary">DESCARGAR EXCEL</Button></a>
         </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2"><WindowControl onChange={load} /></div>
+        <MyAttendance onChange={load} />
       </div>
 
       <Card className="p-4">
@@ -150,15 +171,15 @@ export default function DashboardPage() {
       {error && <Alert>{error}</Alert>}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Total de empleados" value={s.total} hint="Plantilla activa en el filtro" />
-        <StatCard label="Confirmados" value={s.confirmed} tone="green" />
-        <StatCard label="Pendientes" value={s.pending} tone="amber"
+        <StatCard label="Total de empleados" value={s.total} hint="Plantilla activa en el filtro" icon={<Icon name="emp" />} />
+        <StatCard label="Confirmados" value={s.confirmed} tone="green" icon={<span className="text-lg font-bold">✓</span>} />
+        <StatCard label="Pendientes" value={s.pending} tone="amber" icon={<span className="text-lg font-bold">…</span>}
           hint={[s.retardo ? `${s.retardo} avisaron retardo` : "", s.lateArrivals ? `${s.lateArrivals} llegaron tarde` : ""].filter(Boolean).join(" · ") || undefined} />
-        <StatCard label="Asistencia" value={`${s.percentage}%`} />
+        <StatCard label="Asistencia" value={`${s.percentage}%`} tone="blue" icon={<span className="text-sm font-bold">%</span>} />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        {([["Faltas", s.falta], ["Vacaciones", s.vacaciones], ["Incapacidad", s.incapacidad], ["PSG", s.psg], ["Bajas", s.baja]] as const).map(([l, v]) => (
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
+        {([["Faltas", s.falta], ["Descanso", s.descanso], ["Vacaciones", s.vacaciones], ["Incapacidad", s.incapacidad], ["PSG", s.psg], ["Bajas", s.baja]] as const).map(([l, v]) => (
           <Card key={l} className="flex items-center justify-between px-3 py-2">
             <span className="text-xs font-semibold uppercase text-slate-500">{l}</span>
             <span className="text-lg font-bold tabular">{v}</span>
@@ -177,12 +198,12 @@ export default function DashboardPage() {
           actions={rows.filter((r) => r.canExtend).length > 0 ? (
             <Button variant="secondary" className="text-xs" loading={extBusy}
               onClick={() => extend(rows.filter((r) => r.canExtend).map((r) => r.employeeId))}>
-              Abrir hasta 7:30 a los {rows.filter((r) => r.canExtend).length} sin registro mostrados
+              Abrir registro a los {rows.filter((r) => r.canExtend).length} sin registro
             </Button>
           ) : undefined} />
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200 text-sm">
-            <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+            <thead className="bg-slate-50/80 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-2.5">Empleado</th>
                 <th className="px-4 py-2.5">Área</th>
@@ -194,7 +215,7 @@ export default function DashboardPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {rows.map((r) => (
-                <tr key={`${r.employeeId}-${r.shiftId}`} className="hover:bg-slate-50">
+                <tr key={`${r.employeeId}-${r.shiftId}`} className="transition-colors hover:bg-emerald-50/40">
                   <td className="px-4 py-2.5">
                     <div className="font-semibold text-slate-900">{r.fullName}</div>
                     <div className="text-xs text-slate-500">
@@ -202,7 +223,10 @@ export default function DashboardPage() {
                       {r.role !== "EMPLOYEE" && <Badge className="ml-2 bg-slate-900 text-white ring-slate-900">{ROLE_LABELS[r.role]}</Badge>}
                     </div>
                   </td>
-                  <td className="px-4 py-2.5">{r.departmentName}</td>
+                  <td className="px-4 py-2.5">
+                    {r.departmentName}
+                    {r.support && <div className="text-xs font-semibold text-sky-800">Apoyo{r.homeDepartmentName ? ` (de ${r.homeDepartmentName})` : ""}{r.supportUntil ? ` hasta ${r.supportUntil.split("-").reverse().join("/")}` : ""}</div>}
+                  </td>
                   <td className="px-4 py-2.5">{r.shiftName}</td>
                   <td className="px-4 py-2.5 tabular">
                     {timeMx(r.confirmedAt)}
@@ -212,14 +236,19 @@ export default function DashboardPage() {
                     <StatusBadge status={r.status} automatic={r.automatic} />
                     {r.incidentReason && <div className="mt-1 max-w-xs text-xs text-slate-500">{r.incidentReason}{r.incidentBy ? ` · ${r.incidentBy}` : ""}</div>}
                     {r.lateEta && <div className="mt-1 max-w-xs text-xs text-orange-800">Avisó retardo: llega ~{r.lateEta.slice(0, 5)} · {r.lateReason}</div>}
-                    {r.extensionUntil && <div className="mt-1 max-w-xs text-xs text-sky-800">Extensión hasta {r.extensionUntil.slice(0, 5)} · {r.extensionBy}</div>}
+                    {r.extensionUntil && (
+                      <div className="mt-1 max-w-xs text-xs text-sky-800">
+                        Registro abierto por {r.extensionBy}
+                        {r.status !== "CONFIRMADO" && <> · <button className="font-semibold underline" disabled={extBusy} onClick={() => revokeExt(r.employeeId)}>Cerrar</button></>}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     {r.status !== "CONFIRMADO" && (
                       <div className="flex flex-wrap justify-end gap-1">
                         {r.canExtend && (
                           <Button variant="secondary" className="px-2.5 py-1 text-xs" disabled={extBusy} onClick={() => extend([r.employeeId])}>
-                            Abrir hasta 7:30
+                            Abrir registro
                           </Button>
                         )}
                         <Button variant="secondary" className="px-2.5 py-1 text-xs"

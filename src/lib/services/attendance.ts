@@ -6,7 +6,10 @@ import {
 import { logAudit } from "./audit";
 import type { RequestMeta, SessionEmployee } from "./auth";
 import { getShifts, type Shift } from "./catalog";
-import { getEffectiveShiftId, getNextChange, type NextChange } from "./rol";
+import { getEffectiveShifts } from "./windows";
+import { getProfile } from "./profile";
+import { getDaysInfo, type DayInfo } from "./calendar";
+import { getEffectiveShiftId, getNextChange, getPlacement, type NextChange } from "./rol";
 import { getPhotoVersion } from "./photos";
 import { evaluateRegistration, getExtension, getLateNotice, type ExtensionInfo, type LateNoticeInfo, type RegMode } from "./registration";
 
@@ -40,6 +43,10 @@ export interface AttendanceView {
   existing: AttendanceRecord | null;
   nextChange: NextChange | null;
   photoVersion: string | null;
+  profileMissing: string[];
+  placement: { departmentName: string | null; subareaName: string | null; support: boolean; until: string | null; homeDepartmentName: string | null };
+  day: { type: string; label: string; works: boolean; overtime: boolean; hours: string | null };
+  tomorrow: { date: string; type: string; label: string; works: boolean; hours: string | null };
 }
 
 async function findRecord(employeeId: number, shiftId: number, date: string): Promise<AttendanceRecord | null> {
@@ -67,8 +74,8 @@ function shiftInfo(shift: Shift) {
 }
 
 export async function getAttendanceView(employee: SessionEmployee, now: Date): Promise<AttendanceView> {
-  const shifts = await getShifts();
   const local = getLocalParts(now);
+  const shifts = await getEffectiveShifts(local.date);
   // Turno según el ROL vigente hoy (no un turno fijo).
   const shiftId = await getEffectiveShiftId(employee.id, local.date);
   const shift = shifts.find((s) => s.id === shiftId);
@@ -79,8 +86,9 @@ export async function getAttendanceView(employee: SessionEmployee, now: Date): P
 
   let existing = await findRecord(employee.id, shift.id, local.date);
   // Madrugada (antes de que abra el turno de día): mostrar el registro de la noche anterior.
-  const dayShift = shifts.find((s) => s.code === "DIA");
-  const night = shifts.find((s) => s.code === "NOCHE");
+  const baseShifts = await getShifts(); // horario normal (sin calendario ni cambios manuales)
+  const dayShift = baseShifts.find((s) => s.code === "DIA");
+  const night = baseShifts.find((s) => s.code === "NOCHE");
   if (!existing && night && dayShift && local.seconds < timeToSeconds(dayShift.openTime)) {
     existing = await findRecord(employee.id, night.id, addDays(local.date, -1));
   }
@@ -102,7 +110,29 @@ export async function getAttendanceView(employee: SessionEmployee, now: Date): P
     existing,
     nextChange: await getNextChange(employee.id, local.date),
     photoVersion: await getPhotoVersion(employee.id),
+    profileMissing: (await getProfile(employee.id)).missing,
+    placement: await placementInfo(employee, local.date),
+    ...(await dayInfoFor(shift.code, local.date)),
   };
+}
+
+async function placementInfo(employee: SessionEmployee, date: string) {
+  const p = await getPlacement(employee.id, date);
+  const names = await queryOne<{ dept: string | null; sub: string | null }>(
+    `SELECT (SELECT name FROM departments WHERE id = $1) AS dept, (SELECT name FROM subareas WHERE id = $2) AS sub`,
+    [p.departmentId, p.subareaId]);
+  return {
+    departmentName: names?.dept ?? null, subareaName: names?.sub ?? null,
+    support: employee.role !== "SUPERVISOR" && p.departmentId !== employee.departmentId,
+    until: p.temporary ? p.until : null, homeDepartmentName: employee.departmentName,
+  };
+}
+
+async function dayInfoFor(shiftCode: string, date: string) {
+  const days = await getDaysInfo(date, addDays(date, 1));
+  const fmt = (d: DayInfo) => ({ type: d.type, label: d.label, works: d.works, overtime: d.overtime, hours: d.hours?.[shiftCode] ?? null });
+  const t = fmt(days[1]);
+  return { day: fmt(days[0]), tomorrow: { date: days[1].date, type: t.type, label: t.label, works: t.works, hours: t.hours } };
 }
 
 export async function confirmAttendance(employeeId: number, meta: RequestMeta): Promise<AttendanceRecord & {
@@ -120,10 +150,10 @@ export async function confirmAttendance(employeeId: number, meta: RequestMeta): 
   );
   if (!emp || !emp.active) throw new AppError(403, "EMPLOYEE_INACTIVE", "Empleado no activo.");
 
-  const shifts = await getShifts();
   const local = getLocalParts(meta.now);
-  const shiftId = await getEffectiveShiftId(emp.id, local.date);
-  const shift = shifts.find((s) => s.id === shiftId)!;
+  const shifts = await getEffectiveShifts(local.date);
+  const placement = await getPlacement(emp.id, local.date);
+  const shift = shifts.find((s) => s.id === placement.shiftId)!;
   const extension = await getExtension(emp.id, local.date, shift.id);
   const lateNotice = await getLateNotice(emp.id, local.date, shift.id);
   const reg = evaluateRegistration(meta.now, shift, local.date, { extensionClose: extension?.closeTime, hasLateNotice: !!lateNotice });
@@ -144,7 +174,7 @@ export async function confirmAttendance(employeeId: number, meta: RequestMeta): 
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT ON CONSTRAINT attendance_unique_per_day DO NOTHING
      RETURNING id, confirmed_at, operational_date`,
-    [emp.id, shift.id, emp.department_id, emp.role, local.date, meta.now, meta.ip, meta.userAgent.slice(0, 300), emp.subarea_id, reg.mode],
+    [emp.id, shift.id, placement.departmentId, emp.role, local.date, meta.now, meta.ip, meta.userAgent.slice(0, 300), placement.subareaId, reg.mode],
   );
 
   if (!inserted) {

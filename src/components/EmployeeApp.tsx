@@ -6,6 +6,8 @@ import GroupTab from "./employee/GroupTab";
 import ProfileTab from "./employee/ProfileTab";
 import LateNoticeForm from "./employee/LateNoticeForm";
 import NotificationsCard from "./employee/NotificationsCard";
+import AdminLoginInline from "./AdminLoginInline";
+import { VacationCard } from "./employee/MyDataForm";
 import { useServerClock } from "./useServerClock";
 
 interface View {
@@ -22,6 +24,10 @@ interface View {
   existing: { operationalDate: string; confirmedAt: string; via: "NORMAL" | "EXTENSION" | "LATE_NOTICE" } | null;
   nextChange: { date: string; shiftCode: string; shiftName: string } | null;
   photoVersion: string | null;
+  profileMissing: string[];
+  placement: { departmentName: string | null; subareaName: string | null; support: boolean; until: string | null; homeDepartmentName: string | null };
+  day: { type: string; label: string; works: boolean; overtime: boolean; hours: string | null };
+  tomorrow: { date: string; type: string; label: string; works: boolean; hours: string | null };
 }
 
 interface LeaveReq {
@@ -40,7 +46,8 @@ const LEAVE_STATUS: Record<string, string> = {
 
 function areaLabel(v: View) {
   if (v.employee.role === "SUPERVISOR") return "Supervisión";
-  return `${v.employee.departmentName ?? "—"}${v.employee.subareaName ? ` · ${v.employee.subareaName}` : ""}`;
+  const p = v.placement;
+  return `${p.departmentName ?? "—"}${p.subareaName ? ` · ${p.subareaName}` : ""}`;
 }
 
 function todayMx() {
@@ -60,6 +67,7 @@ export default function EmployeeApp() {
   const [justRegistered, setJustRegistered] = useState(false);
   const [tab, setTab] = useState<"asistencia" | "grupo" | "perfil">("asistencia");
   const [showLateForm, setShowLateForm] = useState(false);
+  const [loginAs, setLoginAs] = useState<"empleado" | "admin">("empleado");
 
   const loadView = useCallback(async () => {
     try {
@@ -191,6 +199,19 @@ export default function EmployeeApp() {
       {screen === "loading" && <div className="flex flex-1 items-center justify-center text-slate-500">Cargando…</div>}
 
       {screen === "number" && (
+        <div className="mb-4 grid grid-cols-2 gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm" role="tablist" aria-label="Tipo de acceso">
+          {([["empleado", "Empleado"], ["admin", "Admin"]] as const).map(([k, l]) => (
+            <button key={k} role="tab" aria-selected={loginAs === k} onClick={() => { setLoginAs(k); setError(null); }}
+              className={cx("rounded-md px-3 py-2.5 text-sm font-semibold", loginAs === k ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50")}>
+              {l}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {screen === "number" && loginAs === "admin" && <AdminLoginInline />}
+
+      {screen === "number" && loginAs === "empleado" && (
         <form onSubmit={onIdentify} className="space-y-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <div>
             <label htmlFor="num" className="mb-1 block text-sm font-semibold text-slate-700">Número de empleado</label>
@@ -255,6 +276,13 @@ export default function EmployeeApp() {
             area={areaLabel(view)} photoVersion={view.photoVersion} onPhotoChanged={loadView} />
           <Button variant="ghost" onClick={onLogout} className="mt-4 w-full">Cerrar sesión</Button>
         </>
+      )}
+
+      {tab === "asistencia" && (screen === "main" || screen === "success") && view && view.profileMissing.length > 0 && (
+        <button onClick={() => setTab("perfil")}
+          className="mb-3 w-full rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-left text-sm text-amber-900">
+          <b>Completa tu perfil.</b> Te falta: {view.profileMissing.join(", ")}. Toca aquí.
+        </button>
       )}
 
       {tab === "asistencia" && (screen === "main" || screen === "success") && view && (
@@ -358,8 +386,19 @@ function ShiftCard({ view }: { view: View }) {
       <div className="mt-3 rounded-md bg-slate-900 px-4 py-3 text-white">
         <p className="text-xs uppercase tracking-wide text-slate-300">Tu turno asignado</p>
         <p className="text-2xl font-bold">{view.shift.name.toUpperCase()}</p>
-        <p className="text-sm text-slate-300">Registro de {time12(view.shift.openTime)} a {time12(view.shift.lastAllowed, true)}</p>
+        {view.day.works
+          ? <p className="text-sm text-slate-300">Registro de {time12(view.shift.openTime)} a {time12(view.shift.lastAllowed, true)}{view.day.hours ? ` · Jornada ${view.day.hours}` : ""}</p>
+          : <p className="text-sm text-amber-300">Hoy no se trabaja{view.day.label ? ` (${view.day.label})` : ""}</p>}
+        {view.day.overtime && <p className="mt-1 text-xs font-semibold text-amber-300">Viernes · {view.day.type === "VIERNES_LARGO" ? "jornada larga" : "tiempo extra"}</p>}
       </div>
+      {view.placement.support && (
+        <p className="mt-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900">
+          Estás en <b>apoyo en {view.placement.departmentName}</b>{view.placement.until ? ` hasta el ${dateLong(view.placement.until)}` : ""}.
+        </p>
+      )}
+      <p className="mt-2 text-xs text-slate-500">
+        Mañana: {view.tomorrow.works ? `se trabaja${view.tomorrow.hours ? ` (${view.tomorrow.hours})` : ""}` : `no se trabaja${view.tomorrow.label ? ` (${view.tomorrow.label})` : ""}`}
+      </p>
       {view.nextChange && (
         <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
           A partir del {dateLong(view.nextChange.date)} tu turno será: <b>{view.nextChange.shiftName}</b>
@@ -372,6 +411,12 @@ function ShiftCard({ view }: { view: View }) {
       </dl>
     </div>
   );
+}
+
+function LeaveBalance() {
+  const [v, setV] = useState<Parameters<typeof VacationCard>[0]["v"]>(null);
+  useEffect(() => { api<{ vacations: NonNullable<Parameters<typeof VacationCard>[0]["v"]> }>("/api/me/profile").then((r) => setV(r.vacations)).catch(() => undefined); }, []);
+  return <VacationCard v={v} />;
 }
 
 function LeaveScreen({ onBack }: { onBack: () => void }) {
@@ -420,6 +465,7 @@ function LeaveScreen({ onBack }: { onBack: () => void }) {
 
   return (
     <section className="space-y-4">
+      <LeaveBalance />
       <form onSubmit={submit} className="space-y-3 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-base font-bold text-slate-900">Solicitar vacaciones o PSG</p>
         <div className="grid grid-cols-2 gap-2">

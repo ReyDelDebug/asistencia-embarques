@@ -90,7 +90,7 @@ function ReportInner() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Reporte para WhatsApp</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Reporte para WhatsApp</h1>
           <p className="text-sm text-slate-500">{dateLong(date)}</p>
         </div>
         <div className="flex flex-wrap items-end gap-2">

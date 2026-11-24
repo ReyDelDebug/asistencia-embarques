@@ -30,7 +30,7 @@ export default function AccountPage() {
 
   return (
     <div className="mx-auto max-w-md space-y-5">
-      <h1 className="text-xl font-bold text-slate-900">Mi cuenta</h1>
+      <h1 className="text-2xl font-bold tracking-tight text-slate-900">Mi cuenta</h1>
       <Card>
         <CardHeader title={me.displayName} subtitle={`Usuario: ${me.username}`} />
         <form onSubmit={submit} className="space-y-3 p-4">

@@ -1,8 +1,8 @@
 /**
  * Notificaciones push (Web Push con llaves VAPID).
  * Un programador externo (Supabase pg_cron) llama a /api/cron/reminders a las
- * 7:05, 7:15, 19:05 y 19:15. Aquí se decide a quién avisar: empleados cuyo
- * turno de HOY cierra pronto, que no han registrado, sin incidencia y sin
+ * 7:05, 7:15, 19:05 y 19:15. Aquí se decide a quién avisar: empleados de ese
+ * turno con el registro ABIERTO, que no han registrado, sin incidencia y sin
  * aviso de retardo. Cada recordatorio se manda una sola vez por persona.
  */
 import { sendNotification } from "web-push";
@@ -11,7 +11,7 @@ import { AppError } from "../errors";
 import { formatTime12, getLocalParts, timeToSeconds } from "../time";
 import { logAudit } from "./audit";
 import type { SessionEmployee } from "./auth";
-import { getShifts } from "./catalog";
+import { getEffectiveShifts } from "./windows";
 
 export interface PushSub { endpoint: string; keys: { p256dh: string; auth: string } }
 export type PushSender = (sub: PushSub, payload: string) => Promise<{ statusCode: number }>;
@@ -99,22 +99,27 @@ export async function sendTestNotification(employee: SessionEmployee, sender: Pu
   return r;
 }
 
-/** Recordatorios: 15 min antes (7:05 / 19:05) y 5 min antes (7:15 / 19:15) del cierre. */
-export const REMINDERS = [
-  { kind: "R15", minLeft: 10 * 60, maxLeft: 17 * 60 },
-  { kind: "R5", minLeft: 1, maxLeft: 8 * 60 },
-] as const;
+/** Recordatorios a horas fijas (hora de Ciudad de México). Se aceptan llamadas de 1 min antes a 5 min después. */
+export const REMINDER_TIMES: Record<string, { kind: string; time: string }[]> = {
+  DIA: [{ kind: "R1", time: "07:05:00" }, { kind: "R2", time: "07:15:00" }],
+  NOCHE: [{ kind: "R1", time: "19:05:00" }, { kind: "R2", time: "19:15:00" }],
+};
 
 export async function sendReminders(now: Date, sender: PushSender = webPushSender) {
-  const shifts = await getShifts();
   const local = getLocalParts(now);
+  const shifts = await getEffectiveShifts(local.date);
   const results: { shift: string; kind: string; targets: number; sent: number; removed: number }[] = [];
 
   for (const shift of shifts) {
-    const left = timeToSeconds(shift.closeTime) - local.seconds;
-    const reminder = REMINDERS.find((r) => left >= r.minLeft && left <= r.maxLeft);
+    const reminder = (REMINDER_TIMES[shift.code] ?? []).find((r) => {
+      const d = local.seconds - timeToSeconds(r.time);
+      return d >= -60 && d < 300;
+    });
     if (!reminder) continue;
-    const minutes = Math.max(1, Math.round(left / 60));
+    const open = local.seconds >= timeToSeconds(shift.openTime) && local.seconds < timeToSeconds(shift.closeTime);
+    if (!open) continue; // el supervisor ya cerró el registro (o aún no abre)
+    const minutes = Math.max(1, Math.round((timeToSeconds(shift.closeTime) - local.seconds) / 60));
+    const allDay = shift.closeTime === "23:59:59";
     const targets = await query<{ id: number; full_name: string }>(
       `SELECT e.id, e.full_name FROM employees e
        WHERE e.active
@@ -135,11 +140,12 @@ export async function sendReminders(now: Date, sender: PushSender = webPushSende
       );
       if (!fresh) continue; // ya se le envió este recordatorio
       const close = formatTime12(shift.closeTime);
+      const closeText = allDay ? "el registro sigue abierto" : `el registro cierra a las ${close} (faltan ${minutes} min)`;
       const r = await deliver(t.id, {
-        title: reminder.kind === "R15" ? "⏰ Aún no registras tu asistencia" : "⚠️ Últimos minutos para registrar",
-        body: reminder.kind === "R15"
-          ? `${t.full_name.split(" ")[0]}, el registro cierra a las ${close} (faltan ${minutes} min).`
-          : `Faltan ${minutes} min: registra antes de las ${close}. Si vas a llegar tarde, avisa en la app.`,
+        title: reminder.kind === "R1" ? "⏰ Aún no registras tu asistencia" : "⚠️ Recuerda registrar tu asistencia",
+        body: reminder.kind === "R1"
+          ? `${t.full_name.split(" ")[0]}, ${closeText}.`
+          : `Todavía no registras: ${closeText}. Si vas a llegar tarde, avisa en la app.`,
         url: "/",
         tag: `recordatorio-${local.date}-${shift.code}`,
       }, sender);

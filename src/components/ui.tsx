@@ -56,7 +56,7 @@ export function Button({
 }
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("rounded-lg border border-slate-200 bg-white shadow-sm", className)}>{children}</div>;
+  return <div className={cx("rounded-xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50", className)}>{children}</div>;
 }
 
 export function CardHeader({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
@@ -75,6 +75,7 @@ export const STATUS_STYLES: Record<string, string> = {
   CONFIRMADO: "bg-emerald-50 text-emerald-800 ring-emerald-600/20",
   PENDIENTE: "bg-amber-50 text-amber-800 ring-amber-600/20",
   RETARDO: "bg-orange-50 text-orange-800 ring-orange-600/30",
+  DESCANSO: "bg-teal-50 text-teal-800 ring-teal-600/20",
   FALTA: "bg-red-50 text-red-800 ring-red-600/20",
   VACACIONES: "bg-sky-50 text-sky-800 ring-sky-600/20",
   INCAPACIDAD: "bg-violet-50 text-violet-800 ring-violet-600/20",
@@ -87,6 +88,7 @@ export const STATUS_LABELS: Record<string, string> = {
   PENDIENTE: "Pendiente",
   RETARDO: "Avisó retardo",
   FALTA: "Falta",
+  DESCANSO: "Descanso",
   VACACIONES: "Vacaciones",
   INCAPACIDAD: "Incapacidad",
   PSG: "PSG",
@@ -165,13 +167,27 @@ export function Modal({
   );
 }
 
-export function StatCard({ label, value, hint, tone = "slate" }: { label: string; value: ReactNode; hint?: string; tone?: "slate" | "green" | "amber" | "red" }) {
-  const tones = { slate: "text-slate-900", green: "text-emerald-700", amber: "text-amber-700", red: "text-red-700" };
+export function StatCard({
+  label, value, hint, tone = "slate", icon,
+}: { label: string; value: ReactNode; hint?: string; tone?: "slate" | "green" | "amber" | "red" | "blue"; icon?: ReactNode }) {
+  const tones = {
+    slate: { text: "text-slate-900", bg: "bg-slate-100 text-slate-600", bar: "from-slate-400 to-slate-300" },
+    green: { text: "text-emerald-700", bg: "bg-emerald-100 text-emerald-700", bar: "from-emerald-500 to-emerald-300" },
+    amber: { text: "text-amber-700", bg: "bg-amber-100 text-amber-700", bar: "from-amber-500 to-amber-300" },
+    red: { text: "text-red-700", bg: "bg-red-100 text-red-700", bar: "from-red-500 to-red-300" },
+    blue: { text: "text-sky-700", bg: "bg-sky-100 text-sky-700", bar: "from-sky-500 to-sky-300" },
+  }[tone];
   return (
-    <Card className="px-4 py-3">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={cx("mt-1 text-2xl font-bold tabular", tones[tone])}>{value}</p>
-      {hint && <p className="mt-0.5 text-xs text-slate-500">{hint}</p>}
+    <Card className="relative overflow-hidden px-4 py-4">
+      <div className={cx("absolute inset-x-0 top-0 h-1 bg-gradient-to-r", tones.bar)} />
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+          <p className={cx("mt-1 text-3xl font-bold tabular", tones.text)}>{value}</p>
+          {hint && <p className="mt-0.5 text-xs text-slate-500">{hint}</p>}
+        </div>
+        {icon && <span className={cx("flex h-10 w-10 items-center justify-center rounded-xl", tones.bg)}>{icon}</span>}
+      </div>
     </Card>
   );
 }
